@@ -1,0 +1,433 @@
+---
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{amsthm}
+title: "2. Regularization and Variable Selection"
+author: "Hair Parra"
+date: "`r Sys.Date()`"
+geometry: margin=1.2cm
+output: 
+    pdf_document: 
+      extra_dependencies: ["array", "amsmath","booktabs"]
+---
+
+\newtheorem{assumption}{Assumption}[assumption]
+\newtheorem{theorem}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{example}{Example}
+\newtheorem{remark*}{Remark}
+\newtheorem{exercise*}{Exercise}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+
+# configurations for plot 
+my_plot_hook <- function(x, options)
+  paste("\n", knitr::hook_plot_tex(x, options), "\n")
+knitr::knit_hooks$set(plot = my_plot_hook)
+```
+
+
+
+# Variable Selection in Linear Regression 
+
+## Example: Synthetic data variable selection 
+
+Consider the process with three covariates $X_1, X_2,X_3$ and numeric target $Y$ given by:   
+
+$$
+\begin{aligned}
+X_1 &\sim \mathcal{N}(0,1) \\
+X_2 &= X_1 + \epsilon_{X} \;\;\;\;,\;\;\;\; \epsilon_{X} \sim \mathcal{N}(0, 0.5^2) \\ 
+X_3 &\sim \mathcal{N}(0,1) \\ 
+Y &= X_1 + X_2 + X_3 + \epsilon_{Y}  \;\;\;\;,\;\;\;\; \epsilon_{Y} \sim \mathcal{N}(0, 3^2)
+\end{aligned}
+$$
+
+The goal is to find the best subset of covariates that explain the target $Y$.
+
+
+```{r}
+# Generate training and test data
+
+# Set the random seed for reproducibility
+set.seed(364575)
+
+# Produce train data with the described process 
+n = 100
+x1 = rnorm(n)
+x2 = x1 + 0.5 * rnorm(n)
+x3 = rnorm(n)
+y = x1 + x2 + x3 + 3 * rnorm(n)
+matx = cbind(x1, x2, x3)
+dat = data.frame(y, x1, x2, x3)
+names(dat) = c("y", "x1", "x2", "x3")
+
+# Test data
+ntest = 10000
+x1new = rnorm(ntest)
+x2new = x1new + 0.5 * rnorm(ntest)
+x3new = rnorm(ntest)
+ynew = x1new + x2new + x3new + 3 * rnorm(ntest)
+matxnew = cbind(x1new, x2new, x3new)
+datnew = data.frame(x1new, x2new, x3new)
+names(datnew) = c("x1", "x2", "x3")
+
+# display both datasets 
+head(dat)
+head(datnew) # test set does not contain Y
+```
+
+```{r}
+# inspect the correlation between the data 
+cor(cbind(y,x1,x2,x3))
+```
+We note that $X_1$ and $X_2$ are highly correlated. 
+
+Next, we fit the model: 
+
+```{r}
+# ordinary OLS
+lm.fit=lm(y~x1+x2+x3)
+summary(lm.fit)
+```
+We see that $\hat{\beta_1}$ and $\hat{\beta_2}$ are not well estimated! (True value is 1). Additionally, the errors are twice as large as compared to $\hat{\beta_3}$. 
+
+## Stepwise Regression 
+
+AIC and BIC in latex: 
+
+$$
+\begin{aligned}
+\text{AIC} &= -2\log(\hat{\theta}_{MLE}) + 2p \\ 
+\text{BIC} &= -2\log(\hat{\theta}_{MLE}) + \log(n)p \\ 
+\end{aligned}
+$$
+
+```{r}
+# load librarires 
+library(MASS)
+
+# stepwise with AIC as the criterion  (direction argument)
+step.AIC=stepAIC(lm.fit, direction="both")
+
+# produce predictions on the test set 
+predaic=predict(lm.fit, newdata=datnew)
+```
+
+```{r}
+# stepwise with BIC as the criterion
+stepAIC(lm.fit, direction="both", k=log(n))
+
+# refit model with covariates selected by BIC
+lm.fitbic=lm(y~x1+x3)
+
+# produce preditions on the test set 
+predbic=predict(lm.fitbic,newdata=datnew)
+```
+
+## Applying Ridge Regression 
+
+
+```{r} 
+# load libraries
+library(glmnet) 
+
+# Cross-validation to select the best value of lambda for ridge regression (alpha=0)
+glmnet.cv = cv.glmnet(matx, y, alpha = 0)
+
+# Plot the cross-validation results
+plot(glmnet.cv)
+``` 
+
+We can then extract the best value of $\lambda$ and get the predictions with the model that uses it. 
+
+**Note:** 
+- The **leftmost** vertical line is the value of $\lambda$ that minimizes the cross-validation MSE. 
+- The **second MSE** is the **1-CV** value of $\lambda$. 
+- The top numbers on the plot show the number of variables selected in the model. 
+
+
+```{r}
+# Find the best lambda value for ridge regression
+bestlridge = glmnet.cv$lambda.min
+
+# Predict using ridge regression with the best lambda
+predridge = predict(glmnet.cv, new = matxnew, s = bestlridge)
+
+# Display the coefficients for the selected lambda
+predict(glmnet.cv, s = bestlridge, type = "coefficients")
+print(paste0("best lambda: ", bestlridge))
+```
+
+- $\hat{\beta}_1$ and $\hat{\beta}_2$ are closer to their true value! 
+- In general, $\hat{\beta} \rightarrow 0$ as $\lambda \rightarrow \infty$.
+- But some coefficients might also start to increase when $\lambda$ begins to increase. 
+
+```{r}
+# Plot the Ridge (L2 regularization) regularization path for a range of lambda values
+plot(glmnet(matx, y, alpha = 0, lambda = seq(0, 100, 0.1)),
+     main = "Evolution of estimates as lambda increases",
+     xvar = "lambda", label = TRUE)
+
+# Add labels to the lines representing coefficients
+legend("topright", legend = c("x1", "x2", "x3"), col = 1:3, lty = 1)
+```
+
+
+Finally, we can compute the mean squared error on the test set for the
+three models: 
+- OLS (using stepwise with AIC)
+- OLS (using stepwise withBIC) 
+- ridge regression with $\lambda$ selected by cross-validation.
+
+
+```{r}
+# Calculate the mean squared error for the three models: AIC, BIC, ridge
+mse_results <- c(
+  "OLS with AIC" = mean((predaic-ynew)^2),
+  "OLS with BIC" = mean((predbic-ynew)^2),
+  "Ridge Regression" = mean((predridge-ynew)^2)
+)
+
+# Display the mean squared error for each model with their names
+mse_results
+```
+We see that the best performance is achieved by ridge regression followed by OLS (stepwise with AIC).
+
+**Remark:** Since $\epsilon_Y \sim \mathcal{N}(0, 3^2) \implies \mathbb{V}[\epsilon]=9$ which is the irreducible variance. 
+So we are close to the best possible performance. This makes sense due to the bias-variance tradeoff.
+
+
+## Applying Lasso Regression 
+
+
+```{r}
+# Plot the Lasso (L1 regularization) regularization path for a range of lambda values
+plot(glmnet(matx, y, alpha = 1, lambda = seq(0, 100, 0.1)), xvar = "lambda", label = TRUE)
+
+# Add labels to the lines representing coefficients
+legend("topright", legend = c("x1", "x2", "x3"), col = 1:3, lty = 1)
+```
+
+
+We see that $\hat{\beta}_3$ reaches 0 first, followed by $\hat{\beta}_2$, and when $\lambda$ is about $2.7=e^1$, all coefficients are 0. Thus the model selects: 
+1. All variables 
+2. Only $X_1$ and $X_2$
+3. Only $X_1$ 
+
+Recall the original generation process: 
+
+
+$$
+\begin{aligned}
+X_1 &\sim \mathcal{N}(0,1) \\
+X_2 &= X_1 + \epsilon_{X} \;\;\;\;,\;\;\;\; \epsilon_{X} \sim \mathcal{N}(0, 0.5^2) \\ 
+X_3 &\sim \mathcal{N}(0,1) \\ 
+Y &= X_1 + X_2 + X_3 + \epsilon_{Y}  \;\;\;\;,\;\;\;\; \epsilon_{Y} \sim \mathcal{N}(0, 3^2)
+\end{aligned}
+$$
+
+### Lasso: Optimal $\lambda$ with cross-validation
+
+$$
+\begin{aligned}
+\hat{\beta} &= \arg\min_{\beta} \left\{ \sum_{i=1}^{n} (y_i - (\beta_0 + \beta^T x_i))^2 + \lambda \sum_{j=1}^{p} |\beta_j| \right\} \\ 
+&= \arg\min_{\beta}  || Y - X\beta ||^2_2 + \lambda ||\beta||_1 
+\end{aligned}
+$$
+
+```{r}
+# Perform cross-validation to select the best value of lambda for Lasso regression (alpha=1)
+glmnet.cv = cv.glmnet(matx, y, alpha = 1)
+
+# plot the cross-validation results
+plot(glmnet.cv)
+```
+**Note:** 
+
+- We see that the best $\lambda$ with base CV and the 1-SE are different, with the latter choosing a bitter $\lambda$
+
+```{r}
+# Get the lambda value with the minimum cross-validation error for Lasso
+bestllasso = glmnet.cv$lambda.min
+
+# Display the best lambda value for Lasso
+print(paste0("best lambda (lasso) = ", bestllasso))
+
+# Predict using Lasso regression with the best lambda
+predlasso = predict(glmnet.cv, new = matxnew, s = bestllasso)
+
+# Display the coefficients for the selected lambda in Lasso regression
+predict(glmnet.cv, s = bestllasso, type = "coefficients")
+```
+
+
+Let's inspect the MSE: 
+
+```{r}
+# Calculate the mean squared error for different models and store them in a named vector
+mse_results <- c(
+  "OLS with AIC" = mean((predaic - ynew)^2),
+  "OLS with BIC" = mean((predbic - ynew)^2),
+  "Ridge Regression" = mean((predridge - ynew)^2),
+  "Lasso Regression" = mean((predlasso - ynew)^2)
+)
+
+# Display the names of models and their respective mean squared errors
+mse_results
+```
+- Here, Ridge >> Lasso > OLS (AIC) >> OLS (BIC).
+- **Ridge** tens to shrink the coefficients towards 0 to produce an "average" effect. 
+- **Lasso** will tend to favour one of the correlated covariates. 
+- Similar predictive performance. 
+
+
+## Elastic Net Regression 
+
+We can observe the effect on the parameters with $\alpha=0.5$ 
+
+```{r}
+# elastic net regression with the glmnet package
+plot(glmnet(matx, y, alpha=.5,lambda=seq(0,100,.1)),xvar = "lambda", label = TRUE)
+
+# Add labels to the lines representing coefficients
+legend("topright", legend = c("x1", "x2", "x3"), col = 1:3, lty = 1)
+```
+
+Similarly, the cross-validation for $\lambda$: 
+
+```{r}
+# Perform cross-validation to select the best value of lambda for elastic net regression (alpha=0.5)
+glmnet.cv = cv.glmnet(matx, y, alpha=.5)
+plot(glmnet.cv)
+```
+
+
+```{r}
+# Elastic Net regression with the glmnet package
+
+# Get the lambda value with the minimum cross-validation error for Elastic Net
+bestllel = glmnet.cv$lambda.min
+
+# Display the best lambda value for Elastic Net
+bestllel
+```
+
+```{r}
+# Predict using Elastic Net regression with the best lambda
+predelasticnet = predict(glmnet.cv, new = matxnew, s = bestllel)
+
+# Display the coefficients for the selected lambda in Elastic Net regression
+predict(glmnet.cv, s = bestllel, type = "coefficients")
+```
+
+```{r}
+# Calculate the mean squared error for different models and store them in a named vector
+mse_results <- c(
+  "OLS with AIC" = mean((predaic - ynew)^2),
+  "OLS with BIC" = mean((predbic - ynew)^2),
+  "Ridge Regression" = mean((predridge - ynew)^2),
+  "Lasso Regression" = mean((predlasso - ynew)^2),
+  "Elastic Net (alpha=0.5)" = mean((predelasticnet - ynew)^2)
+)
+
+# Display the names of models and their respective mean squared errors
+mse_results
+```
+
+- In this case, Elastic Net performs better than Lasso slightly, but not better than Ridge.
+- Note that `glmnet` does not have a function to automatically select the best value of $\alpha$.  
+
+# Group Lasso 
+
+The data generation process below is as follows: 
+
+- Generate data for two covariates $X_1$ and $X_2$
+- First one continous, second one categorical with 4 levels. 
+- Create 3 dummy variables to rerpresent the categorical first three values and the fourth one is the reference category. 
+- Only $X_1$ and $X_21$ are linked to $Y$ 
+
+$$
+\mathbb{E}[Y] = 2X_1 + X_{21}
+$$
+
+## OLR model 
+
+```{r}
+# Generate grouped variables
+set.seed(36566)
+x1 = runif(200)
+x2 = sample(1:4, 200, replace = TRUE)
+x21 = as.numeric(x2 == 1)
+x22 = as.numeric(x2 == 2)
+x23 = as.numeric(x2 == 3)
+y = 2 * x1 + x21 + rnorm(200)
+matx = cbind(x1, x21, x22, x23)
+
+# Summary of linear regression model
+summary(lm(y ~ x1 + x21 + x22 + x23))
+```
+
+We see parameters for $X_1$ and $X_21$ are significant, but not for the other two dummies. 
+
+**Note:** Package for Group Lasso: `grpreg` . 
+
+```{r}
+# Load the grpreg library
+library(grpreg)
+
+# Define grouping for grouped Lasso and grouped Elastic Net
+group = c(1, 2, 2, 2)
+
+# Fit grouped Lasso regression
+grlassofit = grpreg(matx, y, group, penalty = "grLasso")
+
+# Plot the results for grouped Lasso
+plot(grlassofit, main = "Grouped Lasso Regression CV", legend = TRUE)
+```
+
+
+
+
+```{r}
+# Fit grouped Elastic Net regression
+gelfit = grpreg(matx, y, group, penalty = "gel")
+
+# Plot the results for grouped Elastic Net
+plot(gelfit, main = "Grouped Elastic Net Regression")
+```
+
+We see that the dummies are dropped simultaneously and earlier than $X_{21}$ A value of $\lambda=0$ corresponds to OLS.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

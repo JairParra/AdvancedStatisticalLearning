@@ -1,0 +1,148 @@
+---
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{amsthm}
+title: "2. SAS Data (PCA)"
+author: "Hair Parra"
+date: "`r Sys.Date()`"
+geometry: margin=1.2cm
+output: 
+    pdf_document: 
+      extra_dependencies: ["array", "amsmath","booktabs"]
+---
+
+\newtheorem{assumption}{Assumption}[assumption]
+\newtheorem{theorem}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{example}{Example}
+\newtheorem{remark*}{Remark}
+\newtheorem{exercise*}{Exercise}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+
+# configurations for plot 
+my_plot_hook <- function(x, options)
+  paste("\n", knitr::hook_plot_tex(x, options), "\n")
+knitr::knit_hooks$set(plot = my_plot_hook)
+```
+
+# SAS Example 
+
+In a survey, 200 adults were asked the following questions regarding a certain type of store.
+
+The responses are provided on a 5 points Likert scale where:
+- 1 = not important
+- 2 = slightly important
+- 3 = moderately important
+- 4 = important
+- 5 = very important
+
+For you, how important is it:
+  - $X_1$ that the store offers good prices every day?
+  - $X_2$ that the store accepts major credit cards?
+  - $X_3$ that the store offers quality products?
+  - $X_4$ that sellers are familiar with the products?
+  - $X_5$ that there are special sales regularly?
+  - $X_6$ that known brands are available?
+  - $X_7$ that the store has its own credit card?
+  - $X_8$ that the service is fast?
+  - $X_9$ that there is a wide selection of products?
+  - $X_{10}$ that the store accepts payment by debit card?
+  - $X_{11}$ that the staff is courteous?
+  - $X_{12}$ that the store has in stock the advertised products?
+
+
+
+```{r}
+# load required libraries 
+library("here") 
+library("haven")
+
+# Load the 'haven' library for importing SAS data files
+library(haven)
+
+# Read the data from a SAS file and store it in the 'datpca' variable
+datpca <- read_sas(here("code_data_W2024", "factor2.sas7bdat"))
+
+# Convert the data to a matrix
+datpca <- as.matrix(datpca)
+
+# Standardize (scale) each column of the matrix
+datpca <- apply(datpca, 2, scale) # i.e. mean 0, std 1 
+```
+
+## PCA 
+
+Apply ordinary PCA and get a **scree_plot**. 
+
+```{r}
+# Load the 'factoextra' library for visualizing PCA results
+library(factoextra)
+
+# Perform Principal Component Analysis (PCA) on the standardized data 'datpca'
+pca <- prcomp(datpca)
+
+# Get and print the eigenvalues, variance percentages, and cumulative variance percentages
+get_eig(pca)
+``` 
+
+```{r}
+# Visualize the eigenvalues using a scree plot
+fviz_eig(pca)
+```
+
+- Three or four components seem reasonable according to the scree plot. 
+- The first 4 recover 64% of the variance in the data. 
+
+```{r}
+# getting the coefficient of the first four components
+pca[[2]][,1:4]
+```
+- All the variables contribute (i.e. have a non-zero coeficients) to all components.
+- **However we need interpretation!** 
+e.g. **factor analysis** 
+- Can us ea **rotation method**: solution with many small *loadings* and only a few large ones. 
+- Easier to interpret is mabhy coefficients were 0 $\implies$ **Lasso regularization can be helpful!**. 
+
+## Lasso PCA 
+
+```{r}
+# load required libraries 
+library(elasticnet)
+
+# Perform Sparse PCA on the standardized data 'datpca'
+spcafit=spca(datpca,
+             K=4, # number of components
+             sparse="penalty", # penalty method
+             para=rep(0,4)) # values of lambda for each component
+```
+
+**Note:** We set all the lambdas to zero for no shrinkage. 
+
+```{r}
+spcafit
+```
+
+If we use a $\lambda$ of 32 for each component, we get the following sparse solution:
+
+```{r}
+# Perform Sparse PCA on the standardized data 'datpca'
+spcafit=spca(datpca, K=4, sparse="penalty", para=rep(32,4))
+spcafit
+```
+This is the solution that we get from a **classical factor analysis**. 
+
+- The first component is related to **service** 
+- The second one to **products** 
+- The third one to **payment** 
+- The fourth one to **price** 
+
+**Note:** Can use a genetic algorithm for hyperparameter selection. 
+
+
+

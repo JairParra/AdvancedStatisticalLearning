@@ -1,0 +1,644 @@
+gendgp=function(n,parcens){
+
+# function to generate artificial survival data
+# n = sample size
+# parcens = parameter (lambda) of the exponential censoring time.
+#		Use it to get the desired proportion of censoring
+# output = data frame with 21 columns
+#  col 1 - col 15 = covariates V1-V15 
+#		(only V1,V2,V3,V5,V6,V7,V10 are related to the event time)
+#  col16 = y = observed time (true or censored). This is the target variable
+#  col17 = status = 1 = dead (event occured) ; 0 = alive (censored)
+#  col 18 - col 21 are used to evaluate the models but are not available
+#		for training and in fact would not be 
+#		available in a real application
+#  col18 = truey =  true event time.
+#  col19 = cens =  true censoring time.
+#  col20 = truefx =  true function of the covariates (log scale). 
+#		log(Y) = truefx + epsilon.
+#		epsilon if from a gamma(3,5) distribution 
+#  col21 = exptruefx =  exp(truefx). 
+#		Y = exptruefx*exp(epsilon)
+
+library(mvtnorm)
+
+sigma=matrix(.3,15,15)
+sigma=sigma+.7*diag(15)
+
+x=rmvnorm(n, mean = rep(0, 15), sigma = sigma)
+
+x[,6]=abs(x[,6])
+x[,7]=as.numeric(x[,7]>.5)
+x[,8]=as.numeric(x[,8]>.2)
+x[,9]=log(x[,9]+5)
+x[,10]=exp(x[,10]/3)
+x[,11]=as.numeric(x[,11]>.1)
+x[,12]=abs(x[,12])
+
+truefx=-.5+(x[,1]+x[,2]+.3*x[,2]^2+x[,5]+x[,6]-.3*x[,5]*x[,6]+x[,7]+
+1/(x[,10]+3)+(x[,3]>0)*(x[,1]>0)-(x[,3]<0)*(x[,1]>0))/3
+truefx=apply(cbind(truefx,1.7),1,min)
+truefx=apply(cbind(truefx,-1.8),1,max)
+
+exptruefx=exp(truefx)
+
+# true value of Y (time) if no censoring
+truey=exptruefx*rgamma(n,3,5)
+
+# censoring time
+cens=rexp(n,1/parcens)
+
+# observed time
+y=apply(cbind(truey,cens),1,min)
+
+# censoring indicator (1 = event occured (dead); 0 = censored (alive))
+status=as.numeric(truey<cens)
+
+out=data.frame(cbind(x,y,status,truey,cens,truefx,exptruefx))
+out
+
+
+}
+
+
+# function to compute the true survival function
+trueS=function(exptruefx,vectime)
+{
+# exptruefx = value from gendgp function
+# vectime = vector of points where to evaluate S
+pgamma(vectime/exptruefx,3,5,lower.tail = FALSE)
+}
+
+# Generate training and test data
+set.seed(4756)
+parcens=1.5
+ntrain=500
+dattrain=gendgp(ntrain,parcens)
+dattrain$truey=NULL
+dattrain$cens=NULL
+dattrain$truefx=NULL
+dattrain$exptruefx=NULL
+summary(dattrain)
+
+ntest=1000
+dattest=gendgp(ntest,parcens)
+summary(dattest)
+
+hist(dattrain[,"y"])
+
+
+library(survival)
+
+#####  Kaplan-Meier estimate of the whole sample with pointwise confidence bands
+kmfit=survfit(Surv(y,status) ~ 1,  type="kaplan-meier", conf.type="log", data=dattrain)
+plot(kmfit)
+
+
+##### Cox model
+
+fitcox=coxph(Surv(y,status)~.,data=dattrain,x=TRUE)
+summary(fitcox)
+# risk prediction (with respect to average person)
+predcoxrisk=predict(fitcox, newdata=dattest,type="risk")
+# estimation of the survival function for test data
+coxsurvival=survfit(fitcox, newdata=dattest)
+
+# function to plot the estimated survival curve and
+# 	the true one.
+plotcox=function(i){
+matplot(cbind(coxsurvival[i]$time,coxsurvival[i]$time),
+cbind(trueS(dattest[i,"exptruefx"],coxsurvival[i]$time),coxsurvival[i]$surv),
+xlab="Time",ylab="Survival",type="l",xlim=c(0,3))
+}
+# True and estimated S for the first 4 observations
+par(mfrow=c(2,2))
+plotcox(1)
+plotcox(2)
+plotcox(3)
+plotcox(4)
+
+# Get the estimated median from the Cox model and count how many are NAs
+coxsurvival[1:20]
+sum(is.na(summary(coxsurvival)$table[, "median"]))
+
+
+##### AFT model
+
+# Compare AFT models with different distributions
+fitsreg1=survreg(Surv(y,status)~.,data=dattrain,dist="weibull")
+fitsreg2=survreg(Surv(y,status)~.,data=dattrain,dist="exponential")
+fitsreg3=survreg(Surv(y,status)~.,data=dattrain,dist="gaussian")
+fitsreg4=survreg(Surv(y,status)~.,data=dattrain,dist="logistic")
+fitsreg5=survreg(Surv(y,status)~.,data=dattrain,dist="lognormal")
+fitsreg6=survreg(Surv(y,status)~.,data=dattrain,dist="loglogistic")
+
+# Get the AIC
+c(extractAIC(fitsreg1),extractAIC(fitsreg2),extractAIC(fitsreg3),
+extractAIC(fitsreg4),extractAIC(fitsreg5),extractAIC(fitsreg6))
+
+# Best model according to the AIC
+summary(fitsreg6)
+exp(fitsreg6$coefficient)
+
+# To compute the estimated survival curves
+pct=(1:199)/200  
+ptime=predict(fitsreg6,newdata=dattest, type='quantile', p=pct)
+
+# function to plot the estimated survival curve and
+# 	the true one.
+plotaft=function(i){
+matplot(cbind(ptime[i,],ptime[i,]),
+cbind(trueS(dattest[i,"exptruefx"],ptime[i,]),1-pct),
+xlab="Time", ylab="Survival", type='l', xlim=c(0,3))
+}
+# True and estimated S for the first 4 observations
+par(mfrow=c(2,2))
+plotaft(1)
+plotaft(2)
+plotaft(3)
+plotaft(4)
+
+
+# Get the event time predictions for the test data 
+predsreg=predict(fitsreg6,newdata=dattest)
+predsreg[1:10]
+errsreg=data.frame(mean(abs(predsreg-dattest$truey)),
+mean((predsreg-dattest$truey)^2))
+names(errsreg)=c("MAE","MSE")
+errsreg
+
+
+########## NEW!!!!!!!!!!!!!!!!!!!!!!!!!!!!  
+
+
+# Compute the estimated mean for the loglogistic distribution 
+predsregmean=predsreg*(pi*fitsreg6$scale)/sin(pi*fitsreg6$scale)
+errsregmean=data.frame(mean(abs(predsregmean-dattest$truey)),
+mean((predsregmean-dattest$truey)^2))
+names(errsregmean)=c("MAE","MSE")
+errsregmean
+
+summary(cbind(predsreg,predsregmean,dattest$truey))
+mean(abs(predsregmean-dattest$truey)<abs(predsreg-dattest$truey))
+plot(dattest$truey,abs(predsregmean-dattest$truey))
+plot(dattest$truey,abs(predsreg-dattest$truey))
+
+predmeansurvreg=function(mod,predvalue,dist)
+{
+### Function to return the estimated E[T] from a survreg model
+# mod = The survreg object
+# predvalue = The value of predict on mod ( e.g. predict(mod,newdata=...) )
+# dist = The distribution assumed in mod. One of ("gaussian", "logistic", "lognormal", "weibull", "loglogistic", "exponential") 
+
+
+if(dist=="gaussian" | dist=="logistic" | dist=="exponential"){finalpred=predvalue}
+else if(dist=="weibull"){finalpred=predvalue*gamma(1+mod$scale)}
+else if(dist=="lognormal"){finalpred=predvalue*exp(mod$scale^2/2)}
+else if(dist=="loglogistic")	{
+	if(mod$scale<1){finalpred=predvalue*(pi*mod$scale)/sin(pi*mod$scale)} else{finalpred=NA}
+				}
+finalpred
+}
+
+predsregmean1=predmeansurvreg(fitsreg6,predsreg,"loglogistic")
+summary(predsregmean1-predsregmean)
+
+
+
+##########   END NEW!!!!!!!!!!!!!!!!
+
+
+# Compare the risk predictions (Cox) to the event time predictions (AFT)
+plot(predsreg,1/predcoxrisk,xlab="Event time prediction from AFT",ylab="1/(risk prediction) from Cox")
+
+
+
+########## NEW!!!!!!!!!!!!!!!!!!!!!!!!!!!!  
+
+# Compare the estimated medians from Cox and AFT, only for the observations where it is defined for Cox.
+coxmedian=summary(coxsurvival)$table[, "median"]
+plot(predsreg[!is.na(coxmedian)],coxmedian[!is.na(coxmedian)],
+xlab="Event time prediction (median) from AFT",ylab="Estimated median from Cox")
+
+##########   END NEW!!!!!!!!!!!!!!!!
+
+
+##### Survival forests
+
+
+########## NEW!!!!!!!!!!!!!!!!!!!!!!!!!!!!  
+
+# Example that the log-rank test depends only on the 
+# order of the pooled data, and not the actual values
+
+set.seed(3645)
+t1=1:10
+t2=c(1.1, 1.2, 2.1, 2.2,8.1, 8.2,8.3,9.1,9.2,9.3)
+t3=c(1.2,1.9,2.7,2.95,8.1,8.5,8.7,9.01,9.02,9.1)
+y1=c(t1,t2)
+y2=c(t1,t3)
+group=c(rep(0,10),rep(1,10))
+cens=rbinom(20,1,.6)
+dat=data.frame(y1,y2,group,cens)
+dat
+
+# log-rank tests for y1 and y2, which have diffeent values
+# but are in the same order.
+survdiff(Surv(y1, cens) ~ group,data=dat)
+survdiff(Surv(y2, cens) ~ group,data=dat)
+
+##########   END NEW!!!!!!!!!!!!!!!!
+
+library(randomForestSRC)
+set.seed(36457)
+fitsrc=rfsrc(Surv(y,status)~.,data=dattrain,ntree=200)
+predsrc=predict(fitsrc,newdata=dattest)
+
+# function to plot the estimated survival curve and
+# 	the true one.
+plotsrc=function(i){
+matplot(cbind(predsrc$time.interest,predsrc$time.interest),
+cbind(trueS(dattest[i,"exptruefx"],predsrc$time.interest),predsrc$survival[i,]),
+type="l",xlab="Time",ylab="Survival",xlim=c(0,3))
+}
+par(mfrow=c(2,2))
+plotsrc(1)
+plotsrc(2)
+plotsrc(3)
+plotsrc(4)
+
+
+##### Compute Brier score
+library(pec)
+
+##prediction function required for pec
+# (taken from the randomForestSRC documentation)
+predictSurvProb.rfsrc <- function(object, newdata, times, ...){
+ptemp <- predict(object,newdata=newdata,...)$survival
+pos <- sindex(jump.times = object$time.interest, eval.times = times)
+p <- cbind(1,ptemp)[, pos + 1]
+if (NROW(p) != NROW(newdata) || NCOL(p) != length(times))
+stop("Prediction failed")
+p
+}
+
+# Compute the IBS for the Cox model and the Forest
+#  with the training data with 5-fold CV
+ibstraincv=pec(list(fitcox,fitsrc),formula=Surv(y,status)~V1+V2+V3+V4+V5+
+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15,data=dattrain,splitMethod="cv5")
+ibstraincv
+
+# Compute the IBS with the test data (no CV because these are new data)
+ibstest=pec(list(fitcox,fitsrc),formula=Surv(y,status)~V1+V2+V3+V4+V5+
+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15,data=dattest,splitMethod="none")
+ibstest
+
+
+##### Compute the C-index
+
+# Function to compute the C-index with survival data (no IPC weights)
+cindexsurvival=function(riskhat,t,status)
+{
+#   riskhat = risk prediction (higher values mean more at risk)
+#   t = observed time
+#   status = censoring indicator (1=dead; 0=alive)
+n=length(riskhat)
+cc=0
+npair=0
+for(i in 1:(n-1))
+	{
+	for(j in (i+1):n)
+		{
+		if(((t[i]<t[j]) & status[i]==1) | ((t[j]<t[i]) & status[j]==1))
+			{
+			cc=cc+(riskhat[i] > riskhat[j])*(t[i]<t[j])+(riskhat[i] < riskhat[j])*(t[i]>t[j])
+			npair=npair+1
+			}
+		}
+	}
+cc/npair
+}
+
+# Compute the C-index (in-sample) for the Cox model
+predcoxrisktrain=predict(fitcox, newdata=dattrain,type="risk")
+cindexsurvival(predcoxrisktrain,dattrain[,"y"],dattrain[,"status"])
+# See that it was part of the output of the fitted model
+summary(fitcox)
+
+
+#####  Lasso with Cox model
+
+library(glmnet)
+xtrainchurn=as.matrix(dattrain[,1:15])
+xtestchurn=as.matrix(dattest[,1:15])
+ytrainchurn=Surv(dattrain[,"y"],dattrain[,"status"])
+
+plot(glmnet(x=xtrainchurn,y=ytrainchurn,family="cox"),xvar = "lambda", label = TRUE)
+cvlassocox=cv.glmnet(x=xtrainchurn,y=ytrainchurn,family="cox")
+plot(cvlassocox)
+coefflassocox=predict(cvlassocox,s="lambda.min",type="coefficients")
+# Compute risk predictions
+predlassocox=predict(cvlassocox,newx=xtestchurn,s="lambda.min",type="response")
+predlassocox[1:10]
+
+# Compute survival function estimates
+# trick is to fit a coxph with the lasso solution as initial values and no iteration
+
+# Indices of the variables selected
+nonzerolasso=as.vector(t(predict(cvlassocox,s="lambda.min",type="nonzero")))
+
+# Fit the model with those variable only
+fitcoxlasso=coxph(Surv(y,status)~.,data=dattrain[,c(names(dattrain)[nonzerolasso],"y","status")],
+init= coefflassocox[nonzerolasso,],iter=0,x=TRUE)
+summary(fitcoxlasso)
+lassocoxsurvival=survfit(fitcoxlasso, newdata=dattest)
+
+# function to plot the estimated survival curve and
+# 	the true one.
+plotcoxlasso=function(i){
+matplot(cbind(lassocoxsurvival[i]$time,lassocoxsurvival[i]$time),
+cbind(trueS(dattest[i,"exptruefx"],lassocoxsurvival[i]$time),lassocoxsurvival[i]$surv),
+xlab="Time",ylab="Survival",type="l",xlim=c(0,3))
+}
+# True and estimated S for the first 4 observations
+par(mfrow=c(2,2))
+plotcoxlasso(1)
+plotcoxlasso(2)
+plotcoxlasso(3)
+plotcoxlasso(4)
+
+# Computation of the IBS on the test data (the first Cox model 
+#		and the forest are added for comparisons)
+#		"formula" is used to specify the censoring model
+ibstest2=pec(list(fitcox,fitsrc,fitcoxlasso),formula=Surv(y,status)~V1+V2+V3+V4+V5+
+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15,data=dattest,splitMethod="none")
+ibstest2
+
+
+# Lasso with Cox model, by adding the 2-way interactions and the squares
+
+# Creating the new variables
+#  https://stackoverflow.com/questions/2080774/generating-interaction-variables-in-r-dataframes
+
+ntrain=nrow(xtrainchurn)
+ntest=nrow(xtestchurn)
+allx=data.frame(rbind(xtrainchurn,xtestchurn))
+allxi=data.frame(model.matrix(~(V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15)^2-1,allx))
+allxsq=data.frame(allx^2)
+names(allxsq)=paste(names(allxsq),"sq", sep="")
+allx=as.matrix(cbind(allxi,allxsq))
+xtrainchurn2=allx[1:ntrain,]
+xtestchurn2=allx[(ntrain+1):(ntrain+ntest),]
+
+dattrain2=data.frame(cbind(xtrainchurn2,dattrain[,c("y","status")]))
+dattest2=data.frame(cbind(xtestchurn2,dattest[,c("y","status")]))
+
+# Fit a Cox lasso with the expanded set of covariates
+plot(glmnet(x=xtrainchurn2,y=ytrainchurn,family="cox"),xvar = "lambda", label = TRUE)
+cvlassocox2=cv.glmnet(x=xtrainchurn2,y=ytrainchurn,family="cox")
+coefflassocox2=predict(cvlassocox2,s="lambda.min",type="coefficients")
+nonzerolasso2=as.vector(t(predict(cvlassocox2,s="lambda.min",type="nonzero")))
+# Number of variables selected
+length(nonzerolasso2)
+
+# Compute risk predictions
+predlassocox2=predict(cvlassocox2,newx=xtestchurn2,s="lambda.min",type="response")
+predlassocox2[1:10]
+
+# Recover the same model with coxph
+fitcoxlasso2=coxph(Surv(y,status)~.,data=dattrain2[,c(names(dattrain2)[nonzerolasso2],"y","status")],
+init=coefflassocox2[nonzerolasso2,],iter=0,x=TRUE)
+summary(fitcoxlasso2)
+# Computation of the IBS on the test data
+#         (basic Cox, random forest, Basic Cox lasso, Cox lasso with interactions) 
+
+ibstest3=pec(list(fitcox,fitsrc,fitcoxlasso,fitcoxlasso2),
+formula=formula(fitcox),data=dattest2,splitMethod="none")
+ibstest3
+
+
+
+#####  Boosting with AFT model
+
+
+library(mboost)
+
+boostaft=glmboost(Surv(y,status)~.,data=dattrain,family=Loglog(),control = boost_control(mstop = 150))
+boostaftcv=cvrisk(boostaft)
+plot(boostaftcv)
+# value of the best number of iterations
+bestm=mstop(boostaftcv)
+bestm
+
+# coefficients of the model when we stop at this number of iterations
+coef(boostaft[bestm])
+
+# computing predictions
+predglmboost=predict(boostaft[bestm],new=dattest,type="response")
+errboostaft=data.frame(mean(abs(predglmboost-dattest$truey)),
+mean((predglmboost-dattest$truey)^2))
+names(errboostaft)=c("MAE","MSE")
+# Putting together the error of the basic AFT model
+#   and this one
+allerrsurvival=rbind(errsreg,errboostaft)
+rownames(allerrsurvival)=c("AFT", "Boosted AFT")
+allerrsurvival
+
+
+#####  Discrete-time survival analysis
+
+# Get the quartiles
+#   For this example, we create a discrete version of Y
+#   using them  
+qu=quantile(dattrain[,"y"])
+qu
+dattrain$yd=1+(dattrain[,"y"]>qu[2])+
+(dattrain[,"y"]>qu[3])+(dattrain[,"y"]>qu[4])+
+(dattrain[,"y"]>qu[5])
+table(dattrain$yd)
+# % censoring by value of yd
+table(dattrain$yd,dattrain$status)
+prop.table(table(dattrain$yd,dattrain$status),1)
+
+
+dattest$yd=1+(dattest[,"truey"]>qu[2])+
+(dattest[,"truey"]>qu[3])+(dattest[,"truey"]>qu[4])+
+(dattest[,"truey"]>qu[5])
+table(dattest$yd)
+
+# Function to create the person-period data set
+createpp=function(y,status,dat)
+{
+#  note: works only with time-invariant predictor
+#  y = the observed time to event
+#	(must be a positive integer)
+#  status = censoring indicator 
+#	dead (event occured) ; 1 = alive (censored)
+#  dat = data frame
+
+# output = a data set in person-period format
+#	one line per period where the subject
+#	is at risk
+#       A new column "ypp" is added. It is the binary
+#		outcome.
+#       A new column "idsubject" is added to keep
+#		track of the original subject
+#	A new column "periodpp" is added. It is the
+#		time period corresponding to the line
+#       New columns for the time indicators Di are added.
+
+out=rep(1,ncol(dat)+3)
+nc=length(out)
+
+for(i in 1:nrow(dat))
+  {
+  yi=dat[i,y]	
+  newl=matrix(unlist(rep(c(dat[i,],i,1,0),yi)),nrow=yi,byrow=TRUE)
+  newl[,nc-1]=1:yi
+  newl[yi,nc]=dat[i,status]	
+  out=rbind(out,newl)	
+  }
+
+out=out[-1,]
+d=data.frame(d=as.factor(out[,nc-1]))
+timeind=as.data.frame(model.matrix(~d-1,data=d))
+
+out=as.data.frame(out)
+names(out)=c(names(dat),c("idsubject","period","ypp"))
+
+out=cbind(timeind,out)
+out
+
+}
+
+dattrainpp=createpp("yd","status",dattrain)
+dim(dattrainpp)
+summary(dattrainpp)
+sum(dattrain[,"status"])
+sum(dattrainpp[,"ypp"])
+dattrainpp[1:15,]
+
+# Fit a logistic regression to the person-period data 
+#  (be careful to remove the intercept)
+fitdtpo=glm(ypp~d1+d2+d3+d4+V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15-1,
+family=binomial(link="logit"),data=dattrainpp)
+summary(fitdtpo)
+
+# Get predictions on test data
+# Create expanded test data set with 4 lines per subject
+dattestpp=dattest
+dattestpp$fakey=4
+dattestpp=createpp("fakey","status",dattestpp)
+dim(dattestpp)
+dattestpp[1:12,]
+# Get the estimated hazards for all periods
+preddtpo=predict(fitdtpo,newdata=dattestpp,type="response")
+preddtpo[1:12]
+
+
+survprob=function(dat)
+{
+# Function to compute the survival and the probability
+#  from discrete time hazard estimations.
+#  a period is added at the end of the last one and it
+#  represents the event "time>largest period"
+
+# dat = data. Must have 3 columns 1-> id, 2-> period, 3-> hazard
+
+# returns a list. Each element in the list provides the
+#                 estimations for one subject
+
+allid=sort(unique(dat[,1]))
+minp=min(dat[,2])
+maxp=max(dat[,2])
+out=list(NULL)
+
+for(i in allid)
+{
+dati=dat[dat[,1]==i,]
+dati=dati[order(dati[,2]),]
+n=nrow(dati)
+s=rep(1,n+1)
+for(j in 1:n)
+{
+s[j+1]=s[j]*(1-dati[j,3])
+}
+p=rep(0,n)
+for(j in 1:n)
+{
+p[j]=s[j]-s[j+1]
+}
+s=s[-1]
+out[[i]]=cbind(dati,s,p)
+out[[i]]=rbind(out[[i]],c(out[[i]][1,1],maxp+1,1,0,1-sum(p)))
+out[[i]]=as.data.frame(out[[i]])
+names(out[[i]])=c("id","period","hazard","survival","probability")
+}
+out
+}
+
+preddtpo=cbind(dattestpp[,c("idsubject","period")],preddtpo)
+summary(preddtpo)
+preddtpo=survprob(preddtpo)
+# Estimations for subject 1. 
+preddtpo[[1]]
+
+
+# Get a prediction for the period
+getmax=function(mat,col)
+{
+which.max(mat[,col])
+}
+predperioddtpo=unlist(lapply(preddtpo,getmax,col=5))
+
+table(dattest$yd,predperioddtpo)
+mean(dattest$yd==predperioddtpo)
+mean(abs(dattest$yd-predperioddtpo))
+table(abs(dattest$yd-predperioddtpo))
+table((dattest$yd-predperioddtpo))
+
+
+# Does not seem to work
+library(DStree)
+
+bagdstree=bag(yd~V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15,
+data=dattrain,status="status",nBoot=1)
+preddstree=predict(bagdstree,data=dattest)
+
+
+# Use a forest on the person-period data set
+
+set.seed(4856767)
+library(randomForest)
+
+# Note that period is added as a covariate
+forestdt=randomForest(as.factor(ypp)~period+V1+V2+V3+V4+V5+V6+V7+V8+V9+V10+V11+V12+V13+V14+V15,
+data=dattrainpp,ntree=500)
+
+predforestdt=predict(forestdt,newdata=dattestpp,type="prob")[,2]
+predforestdt=cbind(dattestpp[,c("idsubject","period")],predforestdt)
+predforestdt=survprob(predforestdt)
+predforestdt[[1]]
+
+predperiodforestdp=unlist(lapply(predforestdt,getmax,col=5))
+table(dattest$yd,predperiodforestdp)
+mean(dattest$yd==predperiodforestdp)
+mean(abs(dattest$yd-predperiodforestdp))
+table(abs(dattest$yd-predperiodforestdp))
+table((dattest$yd-predperiodforestdp))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

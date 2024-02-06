@@ -1,0 +1,59 @@
+---
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{amsthm}
+title: "2. German Credit Data"
+author: "Hair Parra"
+date: "`r Sys.Date()`"
+geometry: margin=1.2cm
+output: 
+    pdf_document: 
+      extra_dependencies: ["array", "amsmath","booktabs"]
+---
+
+\newtheorem{assumption}{Assumption}[assumption]
+\newtheorem{theorem}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{example}{Example}
+\newtheorem{remark*}{Remark}
+\newtheorem{exercise*}{Exercise}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+
+# configurations for plot 
+my_plot_hook <- function(x, options)
+  paste("\n", knitr::hook_plot_tex(x, options), "\n")
+knitr::knit_hooks$set(plot = my_plot_hook)
+```
+
+
+```{r}
+# Load necessary library
+library(stats)
+
+# Generate hypothetical data
+set.seed(0)
+X1 <- rnorm(100)
+X2 <- rnorm(100)
+X3 <- rnorm(100)
+Y <- 1 + 2 * X1 + 3 * X2 - 1.5 * X3 + 2 * X1 * X2 - 1 * X1 * X3 + rnorm(100)
+
+# Create a data frame
+df <- data.frame(X1, X2, X3, Y)
+
+# Fit the full model
+full_model <- lm(Y ~ X1 * X2 * X3, data = df)
+
+# Use the step() function to perform automatic stepwise regression
+step_model <- step(full_model, direction = "both", trace = 1, test = "F")
+
+# Print the summary of the stepwise regression model
+summary(step_model)
+```
+
+

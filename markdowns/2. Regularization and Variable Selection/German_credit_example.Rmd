@@ -1,0 +1,479 @@
+---
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{amsthm}
+title: "2. German Credit Data"
+author: "Hair Parra"
+date: "`r Sys.Date()`"
+geometry: margin=1.2cm
+output: 
+    pdf_document: 
+      extra_dependencies: ["array", "amsmath","booktabs"]
+---
+
+\newtheorem{assumption}{Assumption}[assumption]
+\newtheorem{theorem}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{example}{Example}
+\newtheorem{remark*}{Remark}
+\newtheorem{exercise*}{Exercise}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+
+# configurations for plot 
+my_plot_hook <- function(x, options)
+  paste("\n", knitr::hook_plot_tex(x, options), "\n")
+knitr::knit_hooks$set(plot = my_plot_hook)
+```
+
+# German Credit Data
+
+- The German credit data set (Lichman, 2013) is another data set that we will use a lot.
+- The data and description can be found here: [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/support/statlog+(german+credit+data))
+- This data set classifies 1000 people described by a set of 20 attributes as good or bad credit risks.
+- The target variable, V21, is binary and is recorded to 0-1 (1-2 in the original data); 0=good risk and 1=bad risk.
+- We work with a first version of the data set that includes 9 numeric covariates, 11 factor covariates, and the target variable.
+- The goal of this example is to show you how to apply a **logistic regression Lasso model** 
+
+
+## Data Preprocessing 
+
+```{r}
+# Prepare the German Credit data set
+
+# Load path library 
+library("here")
+
+# Set the path to the data file
+gercred = read.table(here("code_data_W2024", "german.data"))
+
+# Recode the target and two binary covariates to 0-1
+gercred$V21 = as.numeric(gercred$V21 == 2)
+gercred$V19 = as.numeric(gercred$V19 == "A192")
+gercred$V20 = as.numeric(gercred$V20 == "A201")
+
+# Convert factor variables to proper factors
+factor_vars = c("V1", "V3", "V4", "V6", "V7", "V9", "V10", "V12", "V14", "V15", "V17", "V18")
+gercred[factor_vars] <- lapply(gercred[factor_vars], factor)
+
+# Get the names of the factor variables
+fac_vars = vapply(gercred, is.factor, logical(1))
+namfac = names(fac_vars)[fac_vars]
+
+# Names of the numeric variables
+num_vars = vapply(gercred, is.numeric, logical(1))
+namnum = names(num_vars)[num_vars]
+
+# Display a summary of the German Credit data set
+summary(gercred)
+```
+
+### Version with dummies 
+
+```{r}
+# load required libraries 
+library(fastDummies)
+
+# Create dummy variables for the factors
+gercreddum=dummy_cols(gercred, remove_first_dummy=TRUE, remove_selected_columns=TRUE)
+
+# Now all variables are numeric.
+# There are 48 covariates and 1 binary target "V21".
+# summary(gercreddum)
+```
+
+### Train-test split 
+
+For the example, we create a training data set of size 600 and a test set of new data of size 400.
+
+```{r}
+# Splitting the data into a training (ntrain=600) and a test (ntest=400) set
+
+# Set the seed for reproducibility
+set.seed(364565)
+
+# Define the number of training and test samples
+ntrain = 600
+ntest = nrow(gercred) - ntrain
+
+# Randomly select indices for the training set without replacement
+indtrain = sample(1:nrow(gercred), ntrain, replace = FALSE)
+
+# Create dummy variables for gercred data without the target variable (V21)
+xdum = gercreddum # rename
+xdum$V21 = NULL # target variable
+xdum = as.matrix(xdum) # convert to matrix format 
+
+# Split the gercred data and dummy variables into training and test sets
+gercredtrain = gercred[indtrain,]
+gercredtest = gercred[-indtrain,]
+gercreddumtrain = gercreddum[indtrain,]
+gercreddumtest = gercreddum[-indtrain,]
+gerxdumtrain = xdum[indtrain,]
+gerxdumtest = xdum[-indtrain,]
+```
+
+\newpage
+## Logistic Regression Lasso Model
+
+**Lasso:** 
+
+$$
+\begin{aligned}
+\hat{\beta} &= \arg\min_{\beta} \left\{ \sum_{i=1}^{n} (y_i - (\beta_0 + \beta^T x_i))^2 + \lambda \sum_{j=1}^{p} |\beta_j| \right\} \\ 
+&= \arg\min_{\beta}  || Y - X\beta ||^2_2 + \lambda ||\beta||_1 
+\end{aligned}
+$$
+
+**Elastic Net (likelihood-based)** 
+
+$$
+\hat{\beta} = \arg\min_{\beta} \left\{ \frac{1}{n} \sum_{i=1}^{n} w_i \ell (y_i, (\beta_0 + \beta^T x_i))^2 + \lambda \left[ \left(1 - \alpha\right) \frac{1}{2} \sum_{j=1}^{p} \beta_j^2 + \alpha \sum_{j=1}^{p} |\beta_j| \right] \right\}
+$$
+
+**Logistic Regression Elasticnet:**
+
+Using the equation above: 
+
+$$
+\hat{\beta} = \text{arg min}_\beta \left\{ \sum_{i=1}^n \left[ y_i \log \left(1 + \exp(-(\beta_0 + \beta^T x_i))\right) + (1 - y_i) \log \left( \frac{\exp(-(\beta_0 + \beta^T x_i))}{1 + \exp(-(\beta_0 + \beta^T x_i))} \right) \right] + \lambda \left[ (1-\alpha) \frac{1}{2} \sum_{j=1}^p \beta_j^2 + \alpha \sum_{j=1}^p |\beta_j| \right] \right\}
+$$
+
+- $\alpha=0$: **Ridge**
+- $\alpha=1$: **Lasso**
+
+
+```{r, message=FALSE}
+# Logistic regression with the lasso
+
+# Set the seed for reproducibility
+set.seed(162738)
+
+# Load the necessary library
+library(glmnet)
+
+# Plot the lasso path with varying lambda values
+plot(glmnet(gerxdumtrain, 
+            gercredtrain$V21, 
+            family="binomial", # binomial for logreg  
+            alpha=1),
+     xvar = "lambda", 
+     label = TRUE)
+
+# Perform cross-validation to select the optimal lambda
+cvgerlasso = cv.glmnet(gerxdumtrain, gercredtrain$V21, family="binomial", alpha=1)
+
+# Plot the cross-validation results
+plot(cvgerlasso)
+```
+
+
+```{r}
+# Get the coefficients for the optimal lambda
+coeflassoger = predict(cvgerlasso, new=gerxdumtest, s="lambda.min", type="coefficients")
+
+# Display the coefficients and count non-zero coefficients
+coeflassoger
+length(coeflassoger[coeflassoger[,1] != 0 ,])
+```
+We see that variable selection was peformed. 
+
+```{r}
+# Make predictions on the test set using the selected lambda
+predlassoger = predict(cvgerlasso, new=gerxdumtest, s="lambda.min", type="response")
+
+# Display the first 10 predicted values
+predlassoger[1:10]
+```
+
+- The lasso keeps 26 covariates (plus the intercept) out of the 48.
+- The **predictions** are the **probabilities** of being a bad risk.
+- Need a **threshold**. 
+
+We will use a function to estimate the threshold $c$ which maximizes the **gain matrix** 
+
+$$
+G = 
+\begin{pmatrix}
+g_{11} & g_{12} \\
+g_{21} & g_{22}
+\end{pmatrix}
+ = 
+\begin{pmatrix}
+TP & FN \\
+FP & TN
+\end{pmatrix}
+$$
+
+$$
+\begin{aligned}
+\max \; \;&\mathbb{P}(\hat{y}=1, y=1) \times g_{11} + \mathbb{P}(\hat{y}=1, y=0) \times g_{12} \\
+&+ \mathbb{P}(\hat{y}=0, y=1) \times g_{21} + \mathbb{P}(\hat{y}=0, y=0) \times g_{22}
+\end{aligned}
+$$
+
+### Cross-validated probabilities
+
+First, we create a function to obtain cross-validated probabilities from `glmnet`.
+- The best $\lambda$ is chosen by CV in each fold. 
+- The output can be used to find the best threshold afterwards.
+
+```{r}
+# Function to get cross-validated estimated probabilities from glmnet
+# The best lambda is chosen by CV in each fold
+# The output can be used to find the best threshold afterwards
+
+predcvglmnet = function(xtrain, ytrain, k = 10, alpha = 1)
+{
+  # xtrain = matrix of predictors
+  # ytrain = vector of target (0-1)
+  # k = number of folds in CV
+  # alpha = alpha parameter in glmnet
+
+  # Load the necessary library
+  library(glmnet)
+
+  # Set a seed for reproducibility
+  set.seed(375869)
+
+  # Get the number of observations in the training data
+  n = nrow(xtrain)
+
+  # Initialize the vector to store predicted probabilities
+  pred = rep(0, n)
+
+  # Create a random permutation of indices
+  per = sample(n, replace = FALSE)
+
+  # Initialize indices for the current fold
+  tl = 1
+
+  # Perform k-fold cross-validation
+  for (i in 1:k)
+  {
+    # Determine the upper index for the current fold
+    tu = min(floor(tl + n / k - 1), n)
+
+    # Adjust for the last fold
+    if (i == k)
+    {
+      tu = n
+    }
+
+    # Get the current indices for the fold
+    cind = per[tl:tu]
+
+    # Fit a glmnet model with cross-validation on the current fold
+    fit = cv.glmnet(xtrain[-cind, ], ytrain[-cind], family = "binomial", alpha = alpha)
+
+    # Predict the probabilities for the current fold using lambda.min
+    pred[cind] = predict(fit, new = xtrain[cind, ], s = "lambda.min", type = "response")
+
+    # Update the starting index for the next fold
+    tl = tu + 1
+  }
+
+  # Return the predicted probabilities
+  pred
+}
+```
+
+Note that here there are two levels of cross validation:
+
+1. The **outer CV** is used to compute **estimated probabilities**. 
+2. The **innter CV** estimates the tunning parmaeter for a given fold of the outer CV. 
+
+
+### Best Binary Classifier Threshold
+
+```{r}
+# Function to find the best threshold to use for a
+# binary classifier with respect to a gain matrix
+
+bestcutp = function(predcv, y, gainmat = diag(2), cutp = seq(0, 1, .02), plotit = FALSE)
+{
+  # predcv = vector of predicted probabilities (e.g., obtained out-of-sample by CV)
+  # y = vector of target labels (0 or 1)
+  # gainmat = gain matrix (2x2) (we want to maximize the gain)
+  #   (1,1) = gain if pred=0 and true=0
+  #   (1,2) = gain if pred=0 and true=1
+  #   (2,1) = gain if pred=1 and true=0
+  #   (2,2) = gain if pred=1 and true=1
+  # cutp = vector of thresholds to try
+  # plotit = whether to plot the results
+
+  # Initialize variables
+  nc = length(cutp)   # Number of thresholds to evaluate
+  gain = rep(0, nc)   # Vector to store calculated gains
+
+  # Loop through each threshold value
+  for (i in 1:nc)
+  {
+    pred = as.numeric(predcv > cutp[i])  # Predicted binary outcomes using the threshold
+    gain[i] = mean(gainmat[1, 1] * (pred == 0) * (y == 0) +  # Calculate gain for this threshold
+                   gainmat[1, 2] * (pred == 0) * (y == 1) +
+                   gainmat[2, 1] * (pred == 1) * (y == 0) +
+                   gainmat[2, 2] * (pred == 1) * (y == 1))
+  }
+
+  # Optionally plot the gains over different thresholds
+  if (plotit)
+  {
+    plot(cutp, gain, type = "l", xlab = "Threshold", ylab = "Gain")
+  }
+
+  # Create a list containing results
+  out = list(NULL, NULL)
+  out[[1]] = cbind(cutp, gain)               # Matrix of thresholds and associated gains
+  out[[2]] = out[[1]][which.max(gain),]     # Threshold with the maximum gain and its associated mean gain
+  out
+}
+```
+
+
+### Finding the optimal cutoff using the gain matrix 
+
+```{r}
+# Computing CV estimated probabilities with glmnet
+set.seed(16274)
+pred = predcvglmnet(gerxdumtrain, gercredtrain$V21, k = 10, alpha = 1) 
+
+# Estimating the best threshold with the identity gain matrix
+# This step is intended to find the threshold that maximizes gain
+res = bestcutp(pred, gercredtrain$V21, gainmat = diag(2),
+               cutp = seq(0, 1, .02), plotit = TRUE)
+```
+
+```{r}
+# Display the threshold with the associated mean gain
+res[[2]]
+```
+### COmputing the good classification rate 
+
+```{r}
+# using the best threshold to obtain the predictions
+predlassoger01=as.numeric(predlassoger>res[[2]][1])
+
+# good classification rate on the test set
+mean(gercredtest$V21==predlassoger01)
+
+# a naive rule would get a good classification rate of 
+max(mean(gercredtest$V21),1-mean(gercredtest$V21))
+```
+
+We obtain a true good classification rate of 0.6975 on the test set, and a **naive rule**, assigning everyone to the 0 class would get a good classification rate of 0.677.
+
+Hence, the lasso logistic regression performs only a little better compared to the naive rule.
+
+
+## AUC and ROC Curves 
+
+- The **ROC curve** is a plot of the **true positive rate** (TPR) against the **false positive rate** (FPR) for the different possible thresholds.
+- The **AUC** is the area under the ROC curve.
+
+```{r}
+# Load the ROCR library for ROC curve analysis
+library(ROCR)
+
+# Create a prediction object using predicted probabilities and true values
+predrocr = prediction(predlassoger, gercredtest$V21)
+
+# Calculate the ROC curve
+roc = performance(predrocr, "tpr", "fpr")
+
+# Plot the ROC curve
+plot(roc)
+
+# Add a diagonal reference line for a random classifier
+abline(a = 0, b = 1)
+```
+```{r}
+# Calculate and display the AUC (Area Under the Curve)
+performance(predrocr, "auc")@y.values[[1]]
+```
+- Note that we used the test data here but in practice, the value of Y would not be available for the new data.
+- Hence, we would need to compute the ROC curve, AUC and lift chart
+with the training data.
+- In that case, we must remember to use **proper estimation of the probabilities** (like the ones obtained by CV above), in order to get honest estimates.
+
+
+### lift curve 
+
+```{r}
+# Calculate and plot the lift chart
+lift1 = performance(predrocr, "tpr", "rpp")
+
+# Plot the lift chart
+plot(lift1)
+
+# Add a diagonal reference line for a random classifier
+abline(a = 0, b = 1)
+```
+
+## Customizing the gain matrix 
+
+Instead of using the identity gain matrix, we can use a custom gain matrix to reflect the fact that the cost of a false positive is not the same as the cost of a false negative.
+
+Ex.
+
+$$
+G = 
+\begin{pmatrix}
+1 & 0 \\
+0 & 10
+\end{pmatrix}
+$$
+
+```{r}
+# Set the random seed for reproducibility
+set.seed(18965)
+
+# Estimate the best threshold with a gain matrix that favors detecting bad risks
+res1 = bestcutp(pred, gercredtrain$V21, plotit = TRUE, gainmat = rbind(c(1,0), c(0,10)))
+```
+
+```{r}
+# Display the threshold with the associated mean gain
+res1[[2]]
+```
+
+In this case the optimal threshold is clearly much slower, since we now want to **classify more people as bad risks** because the reward is higher if we are right. 
+
+```{r}
+# Function to compute the C-index with a binary target
+cindexbasic=function(phat,y)
+{
+n=length(phat)
+cc=0
+npair=0
+for(i in 1:(n-1))
+	{
+	for(j in (i+1):n)
+		{
+		if(y[i]!=y[j])
+			{
+			cc=cc+(phat[i] > phat[j])*(y[i]>y[j])+(phat[i] < phat[j])*(y[i]<y[j])+ 0.5*(phat[i]==phat[j])
+			npair=npair+1
+			}
+		}
+	}
+cc/npair
+}
+
+# We get the same value as the AUC 
+cindexbasic(predlassoger,gercredtest$V21)
+```
+And we see that it ise indeed the same as the AUC. 
+
+
+
+
+
+
+
+

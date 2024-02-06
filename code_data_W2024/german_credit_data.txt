@@ -1,0 +1,334 @@
+################################
+# Prepare the German Credit data set.
+
+# This version of the data uses the factor variables directly
+# There are 20 covariates and 1 target "V21": 11 factor covariates, 
+#     9 numeric covariates (including 3 binary), and 1 binary target
+
+path=""
+gercred=read.table(paste(path,"german.data",sep=""))
+
+# recode the target and two binary covariates to 0-1
+gercred$V21=as.numeric(gercred$V21==2)
+gercred$V19=as.numeric(gercred$V19=="A192")
+gercred$V20=as.numeric(gercred$V20=="A201")
+
+# get the names of the factor variables
+fac_vars=vapply(gercred, is.factor, logical(1))
+namfac=names(fac_vars)[fac_vars]
+
+# names of the numeric variables
+num_vars=vapply(gercred, is.numeric, logical(1))
+namnum=names(num_vars)[num_vars]
+
+summary(gercred)
+
+
+##################################
+# Create dummy variables for the factors
+
+library(fastDummies)
+gercreddum=dummy_cols(gercred, remove_first_dummy=TRUE, remove_selected_columns=TRUE)
+
+# Now all variables are numeric.
+# There are 48 covariates and 1 binary target "V21".
+
+summary(gercreddum)
+
+
+##################################
+# Splitting the data into a training (ntrain=600) and a 
+#  test (ntest=400) set
+
+set.seed(364565)
+ntrain=600
+ntest=nrow(gercred)-ntrain
+indtrain=sample(1:nrow(gercred),ntrain,replace=FALSE)
+
+xdum=gercreddum
+xdum$V21=NULL
+xdum=as.matrix(xdum)
+
+gercredtrain=gercred[indtrain,]
+gercredtest=gercred[-indtrain,]
+gercreddumtrain=gercreddum[indtrain,]
+gercreddumtest=gercreddum[-indtrain,]
+gerxdumtrain=xdum[indtrain,]
+gerxdumtest=xdum[-indtrain,]
+
+
+##################################
+
+
+# logistic regression with the lasso
+
+set.seed(162738)
+library(glmnet)
+
+plot(glmnet(gerxdumtrain, gercredtrain$V21, family="binomial",alpha=1),xvar = "lambda", label = TRUE)
+cvgerlasso=cv.glmnet(gerxdumtrain, gercredtrain$V21, family="binomial",alpha=1)
+plot(cvgerlasso)
+coeflassoger=predict(cvgerlasso,new=gerxdumtest,s="lambda.min",type="coefficients")
+coeflassoger
+length(coeflassoger[coeflassoger[,1] != 0 ,])
+predlassoger=predict(cvgerlasso,new=gerxdumtest,s="lambda.min",type="response")
+predlassoger[1:10]
+
+
+# function to get cross-validated estimated probabilities from glmnet
+# the best lambda is chosen by CV in each fold
+# the output can be used to find the best threshold afterwards
+
+predcvglmnet=function(xtrain,ytrain,k=10,alpha=1)
+{
+# xtrain=matrix of predictors
+# ytrain=vector of target (0-1)
+# k= # folds in CV
+# alpha=alpha parameter in glmnet
+
+# value: the CV predicted probabilities
+
+library(glmnet)
+set.seed(375869)
+n=nrow(xtrain)
+pred=rep(0,n)
+per=sample(n,replace=FALSE)
+tl=1
+for(i in 1:k)
+{
+tu=min(floor(tl+n/k-1),n)
+if(i==k){tu=n}
+cind=per[tl:tu]
+fit=cv.glmnet(xtrain[-cind,],ytrain[-cind], family="binomial",alpha=alpha)
+pred[cind]=predict(fit,new=xtrain[cind,],s="lambda.min",type="response")
+tl=tu+1
+}
+pred
+}
+
+
+# Function to find the best threshold to use for a
+# binary classifier with respect to a gain matrix
+
+bestcutp=function(predcv,y,gainmat=diag(2),cutp=seq(0,1,.02),plotit=FALSE)
+{
+# predcv = vector of predicted probabilities (obtained out-of-sample by CV for example)
+# y = vector of target (0-1)
+# gainmat = gain matrix (2X2)  (we want to maximize the gain)
+#	(1,1) = gain if pred=0 and true=0
+#	(1,2) = gain if pred=0 and true=1
+#	(2,1) = gain if pred=1 and true=0
+#	(2,2) = gain if pred=1 and true=1
+# cutp=vector of thresholds to try
+# plotit=plot or not the results
+
+# value: a list with 
+#		1) matrix giving the thresholds and estimated mean gains 	
+#		2) the threshold with maximum gain, with the associated mean gain
+
+nc=length(cutp)
+gain=rep(0,nc)
+for(i in 1:nc)
+{
+pred=as.numeric(predcv>cutp[i])
+gain[i]=mean(gainmat[1,1]*(pred==0)*(y==0)+gainmat[1,2]*(pred==0)*(y==1)+
+gainmat[2,1]*(pred==1)*(y==0)+gainmat[2,2]*(pred==1)*(y==1))
+}
+if(plotit){plot(cutp,gain,type="l",xlab="threshold",ylab="gain")}
+out=list(NULL,NULL)
+out[[1]]=cbind(cutp,gain)
+out[[2]]=out[[1]][which.max(gain),]
+out
+}
+
+
+# computing CV estimated probabilities with glmnet
+set.seed(16274)
+pred=predcvglmnet(gerxdumtrain,gercredtrain$V21,k=10,alpha=1) 
+
+# estimating the best threshold with the identity gain matrix
+res=bestcutp(pred,gercredtrain$V21,gainmat=diag(2),
+cutp=seq(0,1,.02),plotit=TRUE)
+res[[2]]
+
+# using the best threshold to obtain the predictions
+predlassoger01=as.numeric(predlassoger>res[[2]][1])
+# good classification rate on the test set
+mean(gercredtest$V21==predlassoger01)
+# a naive rule would get a good classification rate of 
+max(mean(gercredtest$V21),1-mean(gercredtest$V21))
+
+# getting a ROC curve, the AUC, and a lift chart
+library(ROCR)
+predrocr=prediction(predlassoger,gercredtest$V21)
+roc=performance(predrocr,"tpr","fpr")
+plot(roc)
+abline(a=0,b=1)
+performance(predrocr,"auc")@y.values[[1]]
+#lift1=performance(predrocr,"lift","rpp")
+#plot(lift1)
+lift1=performance(predrocr,"tpr","rpp")
+plot(lift1)
+abline(a=0,b=1)
+
+
+
+# estimating the best threshold if it is 10 times better to detect a bad risk
+#    than a good one
+set.seed(18965)
+res1=bestcutp(pred,gercredtrain$V21,plotit=TRUE,gainmat=rbind(c(1,0),c(0,10)))
+res1[[2]]
+
+# Function to compute the C-index with a binary target
+cindexbasic=function(phat,y)
+{
+n=length(phat)
+cc=0
+npair=0
+for(i in 1:(n-1))
+	{
+	for(j in (i+1):n)
+		{
+		if(y[i]!=y[j])
+			{
+			cc=cc+(phat[i] > phat[j])*(y[i]>y[j])+(phat[i] < phat[j])*(y[i]<y[j])+ 0.5*(phat[i]==phat[j])
+			npair=npair+1
+			}
+		}
+	}
+cc/npair
+}
+
+# We get the same value as the AUC 
+cindexbasic(predlassoger,gercredtest$V21)
+
+
+
+########################################################################
+
+########  Tree-based methods
+
+library(rpart)
+library(rpart.plot)
+
+
+set.seed(46576)
+
+# building the tree with rpart
+rptreegc=rpart(V21~.,data=gercredtrain,method="class",control = rpart.control(xval = 10, minsplit=10, minbucket = 3, cp = 0))
+rpart.plot(rptreegc)
+rptreegc$cp
+
+# pruning the tree
+rptreegcpruned=prune(rptreegc,cp=rptreegc$cp[which.min(rptreegc$cp[,"xerror"]),"CP"])
+rpart.plot(rptreegcpruned)
+# getting the predictions (with a threshold of 0.5)
+predrpartgc=predict(rptreegcpruned,newdata=gercredtest,type="class")
+mean(as.factor(gercredtest$V21)==predrpartgc)
+
+
+# pruning the tree with the 1SE rule
+bstd=rptreegc$cp[which.min(rptreegc$cp[,"xerror"]),"xstd"]
+berr=rptreegc$cp[which.min(rptreegc$cp[,"xerror"]),"xerror"]
+rptreegc$cp=cbind(rptreegc$cp,rptreegc$cp[,"xerror"]<=(berr+bstd))
+cp1se=rptreegc$cp[rptreegc$cp[,6]==1,][which.min(rptreegc$cp[rptreegc$cp[,6]==1,"nsplit"]),"CP"]
+rptreegcpruned1se=prune(rptreegc,cp=cp1se)
+rpart.plot(rptreegcpruned1se)
+predrpartgc1se=predict(rptreegcpruned1se,newdata=gercredtest,type="class")
+mean(as.factor(gercredtest$V21)==predrpartgc1se)
+
+
+####### Random forest
+
+
+set.seed(4856767)
+library(randomForest)
+
+rfgc=randomForest(as.factor(V21)~.,data=gercredtrain,ntree=500)
+rfgc
+# to get the estimated probabilities on the test set
+predrfgc=predict(rfgc,newdata=gercredtest,type="prob")
+predrfgc[1:10,]
+# to get the 0-1 predictions. Uses a threshold of 0.5 by default
+predrfgc01=predict(rfgc,newdata=gercredtest)
+predrfgc01[1:10]
+# good classification rate
+mean(as.factor(gercredtest$V21)==predrfgc01)
+
+
+# try to find a better threshold
+# get the OOB predictions
+predoob=predict(rfgc,type="prob")
+# find the best threshold
+res=bestcutp(predoob[,2],gercredtrain$V21,gainmat=diag(2),
+cutp=seq(0,1,.02),plotit=TRUE)
+res[[2]]
+
+# get the new predictions with this threshold
+predrfgc01v2=as.numeric(predrfgc[,2]>res[[2]][1])
+predrfgc01v2[1:10]
+# good classification rate
+mean(gercredtest$V21==predrfgc01v2)
+
+# be careful and not use the in-bag predictions
+#  with the training data
+# we have a good classification rate of 1
+# which is overly optimistic!
+predinbag=predict(rfgc,newdata=gercredtrain)
+mean(as.factor(gercredtrain$V21)==predinbag)
+
+
+####### Boosting
+
+library(adabag)
+
+set.seed(6857)
+
+# strangely, boosting does not work if
+# we use as.factor(...)~. in the formula
+# create other versions with V21 as factor
+# right from the start
+
+gercredtrain1=gercredtrain
+gercredtrain1$V21=as.factor(gercredtrain1$V21)
+gercredtest1=gercredtest
+gercredtest1$V21=as.factor(gercredtest1$V21)
+
+ntree=100
+
+# boosting with stumps (a single split)
+boostgc1=boosting(V21~.,data=gercredtrain1,boos = FALSE, mfinal = ntree, 
+coeflearn = 'Freund', control=rpart.control(maxdepth=1))
+predboostgc1=predict(boostgc1, newdata=gercredtest1)
+predboostgc1$class[1:10]
+predboostgc1$error
+predboostgc1$confusion
+
+boostgr1.evoltrain=errorevol(boostgc1, newdata=gercredtrain1)
+boostgr1.evoltest=errorevol(boostgc1, newdata=gercredtest1)
+matplot(cbind(1:ntree,1:ntree),cbind(boostgr1.evoltrain$error,boostgr1.evoltest$error),
+type="l",xlab="iteration",ylab="error")
+
+# boosting with trees of depth 10
+boostgc10=boosting(V21~.,data=gercredtrain1,boos = FALSE, mfinal = ntree, 
+coeflearn = 'Freund', control=rpart.control(maxdepth=10))
+predboostgc10=predict(boostgc10, newdata=gercredtest1)
+predboostgc10$error
+predboostgc10$confusion
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

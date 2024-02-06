@@ -1,0 +1,477 @@
+# function to combine levels, with less than a specified number of observations, of a factor variables
+
+comblev=function(x,nmin)
+{
+# x = variable (must be a factor, if not the original variable is returned)
+# nmin = levels with less than nmin observations will be combined
+# output
+#  	same variable with a new level called "othcomb" replacing the combined levels 
+#	(NA's are not affected)
+
+if(!is.factor(x)) {return(x)}
+library(rockchalk)
+ta=table(x)
+combineLevels(x,levs = names(table(x))[table(x)<nmin], newLabel = c("othcomb") )
+}
+
+
+# to apply it to a data frame "mat" and get a data frame as the result
+# data.frame(lapply(mat,comblev,nmin=2))
+
+
+################################
+# Prepare the ames housing data set.
+# This version of the data uses the ordered factor as numeric variables and
+# the non-ordered factor are left as factors, but the levels with less than 30
+# observations are combined.
+# In the end, we have 22 factors and 57 numeric covariates, and 1 target "Sale_Price".
+
+
+library(AmesHousing)
+ames=make_ordinal_ames()
+# remove an observation with a missing
+ames=ames[!is.na(ames$Electrical),]
+
+# remove the variable "Utilities" because it is almost constant 
+# with frequencies (1,1,2909).  
+ames$Utilities=NULL
+
+# converts the target variable (1 = 1000)
+ames$Sale_Price=ames$Sale_Price/1000
+
+# get the names of the ordinal variables
+ord_vars=vapply(ames, is.ordered, logical(1))
+namored=names(ord_vars)[ord_vars]
+# converts the ordered factors to numeric (this preserves the ordering of the factor)
+ames[,namored]=data.frame(lapply(ames[,namored],as.numeric))
+
+# get the names of the factor variables
+fac_vars=vapply(ames, is.factor, logical(1))
+namfac=names(fac_vars)[fac_vars]
+
+# group together levels with less than 30 observations
+ames=data.frame(lapply(ames,comblev,nmin=30))
+
+# remove the space in the values (string) of some variables to prevent problems later
+ames[,"Exterior_1st"]=as.factor(gsub(" ","",ames[,"Exterior_1st"]))
+ames[,"Exterior_2nd"]=as.factor(gsub(" ","",ames[,"Exterior_2nd"])) 
+
+num_vars=vapply(ames, is.numeric, logical(1))
+# names of the numeric variables
+namnum=names(num_vars)[num_vars]
+
+
+##################################
+# Create dummy variables for the factors
+
+library(fastDummies)
+amesdum=dummy_cols(ames, remove_first_dummy=TRUE, remove_selected_columns=TRUE)
+
+# Now all variables are numeric.
+# There are 160 covariates and 1 target "Sale_Price".
+
+
+##################################
+# Splitting the data into a training (ntrain=1000) and a 
+#  test (ntest=1929) set
+
+set.seed(489565)
+ntrain=1000
+ntest=nrow(ames)-ntrain
+indtrain=sample(1:nrow(ames),ntrain,replace=FALSE)
+
+xdum=amesdum
+xdum$Sale_Price=NULL
+xdum=as.matrix(xdum)
+
+amestrain=ames[indtrain,]
+amestest=ames[-indtrain,]
+amesdumtrain=amesdum[indtrain,]
+amesdumtest=amesdum[-indtrain,]
+xdumtrain=xdum[indtrain,]
+xdumtest=xdum[-indtrain,]
+
+
+
+##################################
+# Variable selection examples, with all 161 covariates 
+#  (including the dummies for the categorical covariates)
+
+
+# function to apply glmnet and get the predictions and 
+# coefficients for the tuning parameter with minimum CV error,
+# and with the 1 SE rule. It also computes the MAE and MSE if
+# ytest is available
+
+library(glmnet)
+
+wrapglmnet=function(xtrain,ytrain,xtest,ytest=NULL,alpha)
+{
+library(glmnet)
+par(mfrow=c(2,2))
+plot(glmnet(x=xtrain,y=ytrain,alpha=alpha),xvar = "lambda", label = TRUE)
+cv=cv.glmnet(x=xtrain,y=ytrain, alpha=alpha)
+plot(cv)
+pred=predict(cv,new=xtest,s="lambda.min")
+pred1se=predict(cv,new=xtest,s="lambda.1se")
+err=NA
+if(!is.null(ytest))
+{
+plot(ytest,pred)
+plot(ytest,pred1se)
+err=data.frame(mean(abs(pred-ytest)),mean((pred-ytest)^2),
+mean(abs(pred1se-ytest)),mean((pred1se-ytest)^2))
+names(err)=c("MAE", "MSE", "MAE_1SE","MSE_1SE")
+}
+
+co=predict(cv,s="lambda.min",type="coefficients")
+co=as.matrix(co)
+co=co[co[,1] != 0,,drop=FALSE]
+co1se=predict(cv,s="lambda.1se",type="coefficients")
+co1se=as.matrix(co1se)
+co1se=co1se[co1se[,1] != 0,,drop=FALSE]
+
+out=list(err,co,co1se,pred,pred1se)
+names(out)=c("error","coef","coef1se","pred","pred1se")
+out
+}
+
+# basic lasso
+set.seed(123456)
+las=wrapglmnet(xdumtrain,amesdumtrain$Sale_Price,xdumtest,amesdumtest$Sale_Price,1)
+dim(las$coef1se)
+dim(las$coef)
+las$coef1se
+las$coef
+las$err
+
+
+# basic ridge
+set.seed(126523)
+rid=wrapglmnet(xdumtrain,amesdumtrain$Sale_Price,xdumtest,amesdumtest$Sale_Price,0)
+dim(rid$coef1se)
+dim(rid$coef)
+rid$err
+
+# Ordinary OLS regression
+lmfit=lm(Sale_Price~.,data=amesdumtrain)
+predlmfit=predict(lmfit,newdata=amesdumtest)
+errlmfit=data.frame(mean(abs(predlmfit-amesdumtest$Sale_Price)),
+mean((predlmfit-amesdumtest$Sale_Price)^2))
+names(errlmfit)=c("MAE","MSE")
+errlmfit
+
+# Fit an OLS with the lasso variables only
+namlas=rownames(las$coef)[-1]
+laslm=lm(Sale_Price~.,data=amesdumtrain[,c(namlas,"Sale_Price")])
+predlaslm=predict(laslm,newdata=amesdumtest)
+errlaslm=data.frame(mean(abs(predlaslm-amesdumtest$Sale_Price)),
+mean((predlaslm-amesdumtest$Sale_Price)^2))
+names(errlaslm)=c("MAE","MSE")
+errlaslm
+
+# Apply the lasso again to the lasso variables only
+set.seed(162534)
+laslas=wrapglmnet(xdumtrain[,namlas],amesdumtrain$Sale_Price,
+xdumtest[,namlas],amesdumtest$Sale_Price,1)
+laslas$err
+
+
+# relaxed lasso
+set.seed(776245)
+cv.relax=cv.glmnet(x=xdumtrain,y=amesdumtrain$Sale_Price, alpha=1,relax=TRUE)
+plot(cv.relax)
+
+# predictions with optimal lambda and gamma
+pred=predict(cv.relax,new=xdumtest,s="lambda.min",gamma="gamma.min")
+pred1se=predict(cv.relax,new=xdumtest,s="lambda.1se",gamma="gamma.1se")
+errrla=data.frame(MAE=mean(abs(pred-amesdumtest$Sale_Price)),MSE=mean((pred-amesdumtest$Sale_Price)^2),
+MAE_1SE=mean(abs(pred1se-amesdumtest$Sale_Price)),MSE_1SE=mean((pred1se-amesdumtest$Sale_Price)^2))
+errrla
+
+# Putting all the results together and sorting them according to the MAE and MSE
+allres=rbind(las$err[,1:2],rid$err[,1:2],errlmfit,errlaslm,laslas$err[,1:2],errrla[,1:2])
+row.names(allres)=c("lasso","ridge","OLS","lasso-OLS","lasso-lasso","relaxed lasso")
+allres[order(allres[,1]),]
+allres[order(allres[,2]),]
+
+
+# For some models, a few pedicted values are negative which is impossible for this response.
+#	We might try to model log(sale_price) instead.
+
+summary(las$pred)
+sort(las$pred)[1:10]
+length(las$pred)
+
+
+
+########################################################################
+
+# Treating the dummies of a categorical variable as a group
+
+# the vector group will be the argument to grpreg
+group=c(1:57,rep(58,11),rep(59,3),60, rep(61,2),rep(62,4), rep(63,21), rep(64,5),
+65,rep(66,4), rep(67,5), rep(68,2), 69, rep(70,10),rep(71,10),
+rep(72,3),rep(73,4),74,75,rep(76,5),rep(77,2),rep(78,3),rep(79,4))
+
+library(grpreg)
+
+set.seed(14273)
+grlassofit=grpreg(xdumtrain, amesdumtrain$Sale_Price, group, penalty="grLasso")
+plot(grlassofit)
+
+# Group lasso
+grlassofitcv=cv.grpreg(xdumtrain, amesdumtrain$Sale_Price, group,seed=474659,penalty="grLasso")
+coefgrlasso=predict(grlassofitcv,type="coefficients")
+predgrlasso=predict(grlassofitcv,X=xdumtest)
+errgrlasso=data.frame(mean(abs(predgrlasso-amesdumtest$Sale_Price)),
+mean((predgrlasso-amesdumtest$Sale_Price)^2))
+names(errgrlasso)=c("MAE","MSE")
+row.names(errgrlasso)=c("group lasso")
+errgrlasso
+allres=rbind(allres,errgrlasso)
+
+
+
+# Exponential lasso
+set.seed(73888)
+gelcv=cv.grpreg(xdumtrain, amesdumtrain$Sale_Price, group,seed=474659,penalty="gel")
+coefgel=predict(gelcv,type="coefficients")
+predgel=predict(gelcv,X=xdumtest)
+errgel=data.frame(mean(abs(predgel-amesdumtest$Sale_Price)),
+mean((predgel-amesdumtest$Sale_Price)^2))
+names(errgel)=c("MAE","MSE")
+row.names(errgel)=c("exponential lasso")
+errgel
+allres=rbind(allres,errgel)
+
+
+# Best methods so far
+allres[order(allres[,1]),]
+allres[order(allres[,2]),]
+
+
+
+########################################################################
+
+########  Tree-based methods
+
+library(rpart)
+library(rpart.plot)
+
+set.seed(37569)
+rptree=rpart(Sale_Price~.,data=amestrain,method="anova",control = rpart.control(xval = 10, minsplit=10, minbucket = 3, cp = 0))
+#rpart.plot(rptree)
+rptree$cp
+
+rptreepruned=prune(rptree,cp=rptree$cp[which.min(rptree$cp[,"xerror"]),"CP"])
+#rpart.plot(rptreepruned)
+predrpart=predict(rptreepruned,newdata=amestest)
+errrpart=data.frame(mean(abs(predrpart-amesdumtest$Sale_Price)),
+mean((predrpart-amesdumtest$Sale_Price)^2))
+names(errrpart)=c("MAE","MSE")
+row.names(errrpart)=c("single tree (rpart)")
+errrpart
+allres=rbind(allres,errrpart)
+
+
+rptreepruned1se=prune(rptree,cp=5.459169e-03)
+rpart.plot(rptreepruned1se)
+predrpart1se=predict(rptreepruned1se,newdata=amestest)
+errrpart1se=data.frame(mean(abs(predrpart1se-amesdumtest$Sale_Price)),
+mean((predrpart1se-amesdumtest$Sale_Price)^2))
+names(errrpart1se)=c("MAE","MSE")
+errrpart1se
+ 
+
+####### Random forest
+
+
+set.seed(33967)
+library(randomForest)
+rf=randomForest(Sale_Price~.,data=amestrain,ntree=500,mtry=40)
+predrf=predict(rf,newdata=amestest)
+errrf=data.frame(mean(abs(predrf-amesdumtest$Sale_Price)),
+mean((predrf-amesdumtest$Sale_Price)^2))
+names(errrf)=c("MAE","MSE")
+row.names(errrf)=c("random forest")
+errrf
+allres=rbind(allres,errrf)
+
+
+# Best methods so far
+allres[order(allres[,1]),]
+allres[order(allres[,2]),]
+
+
+virf=importance(rf)
+varImpPlot(rf)
+
+# sort the absolute value correlations between 
+#   the target and the other variables
+#   using the dummy variables for the categorical
+#   variables
+library(corrr)
+co=correlate(amesdumtrain)
+coy=as.data.frame(focus(co,Sale_Price))
+coy[,2]=abs(coy[,2])
+coys=coy[order(-coy[,2]),,drop=FALSE]
+coys[1:30,]
+
+
+
+########################################################################
+
+########  Boosting
+
+
+## with gbm
+
+set.seed(33967)
+library(gbm)
+
+gbmgc=gbm(Sale_Price~.,data=amestrain,distribution="gaussian",
+n.trees=100,interaction.depth = 5,shrinkage =0.1)
+predgbm=predict(gbmgc,newdata=amestest,n.trees=100)
+errgbm=data.frame(mean(abs(predgbm-amesdumtest$Sale_Price)),
+mean((predgbm-amesdumtest$Sale_Price)^2))
+names(errgbm)=c("MAE","MSE")
+row.names(errgbm)=c("Tree boosting with gbm")
+errgbm
+allres=rbind(allres,errgbm)
+
+
+## with mboost
+
+set.seed(4756)
+library(mboost)
+
+# fit the model with all variables and 1000 iterations
+glmboostgc=glmboost(Sale_Price~.,data=amesdumtrain,family=Gaussian(),
+control = boost_control(mstop = 2000))
+# to select the number of iterations with bootstrap
+glmboostgccv=cvrisk(glmboostgc)
+plot(glmboostgccv)
+# value of the best number of iterations
+bestm=mstop(glmboostgccv)
+bestm
+# coefficients of the model when we stop at this number of iterations
+coef(glmboostgc[bestm])
+# number of parameters (including intercept)
+length(coef(glmboostgc[bestm]))
+
+# computing predictions
+predglmboost=predict(glmboostgc[bestm],new=amesdumtest)
+errglmboost=data.frame(mean(abs(predglmboost-amesdumtest$Sale_Price)),
+mean((predglmboost-amesdumtest$Sale_Price)^2))
+names(errglmboost)=c("MAE","MSE")
+row.names(errglmboost)=c("LS Boosting with glmboost")
+errglmboost
+allres=rbind(allres,errglmboost)
+
+# Best methods so far
+allres[order(allres[,1]),]
+allres[order(allres[,2]),]
+
+
+########################################################################
+########  Prediction intervals
+
+covlen=function(matpi)
+{
+# Function that computes the coverage rate and the mean length
+#	of prediction intervals
+# input: matrix with 3 columns
+# 	col1 = true y
+#	col2 = lower bound of the PI
+#	col3 = upper bound of the PI
+
+# output: List with 2 elements:
+#	1 = coverage rate; 2 = mean length
+
+list(mean(apply(matpi,1,function(a){(a[1]>=a[2])*(a[1]<=a[3])})),
+mean(matpi[,3]-matpi[,2]))
+}
+
+# Ordinary OLS regression 
+
+lmfit=lm(Sale_Price~.,data=amesdumtrain)
+pilmfit=predict(lmfit,newdata=amesdumtest,
+type="response",interval="prediction")
+pilmfit[1:5,]
+
+cllmfit=covlen(cbind(amesdumtest$Sale_Price,pilmfit[,2:3]))
+cllmfit
+
+
+# Split Conformal PI with the LASSO
+
+set.seed(364575)
+library(conformalInference)
+library(glmnet)
+
+cvglmnet=cv.glmnet(x=xdumtrain,y=amesdumtrain$Sale_Price,alpha=1)
+lambda=cvglmnet$lambda.min
+funs = lasso.funs(lambda=lambda)
+lassoconf = conformal.pred.split(x=xdumtrain, y=amesdumtrain$Sale_Price, x0=xdumtest, alpha=0.05,
+train.fun=funs$train, predict.fun=funs$predict)
+pilassoconf=cbind(lassoconf$lo,lassoconf$up)
+cllassoconf=covlen(cbind(amesdumtest$Sale_Price,pilassoconf))
+cllassoconf
+
+
+#  PI with RF with With quantRegforest
+
+set.seed(36457)
+library(quantregForest)
+
+temptrain=amestrain
+temptrain$Sale_Price=NULL
+temptest=amestest
+temptest$Sale_Price=NULL
+
+qrf=quantregForest(x=temptrain,y=amestrain$Sale_Price,ntree=500,mtry=40)
+
+# Get the Pis with the 0.025 and 0.975 quantiles
+alp=.025
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+
+# The PIs are conservative, try other values for the quantiles
+alp=.05
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+alp=.06
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+alp=.07
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+alp=.08
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+alp=.09
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+alp=.1
+piqrf=predict(qrf,temptest,what=c(alp,1-alp))
+clqrf=covlen(cbind(amesdumtest$Sale_Price,piqrf))
+clqrf
+
+
+
+
+
+

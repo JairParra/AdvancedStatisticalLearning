@@ -1,0 +1,629 @@
+###### To install all packages for the course
+
+pac=c("mvtnorm","randomForestSRC","pec","glmnet","mboost","DStree","randomForest",
+"dummies","ROCR","rpart.plot","adabag","rockchalk","AmesHousing","relaxnet","corrr",
+"gbm","SIS","nlme","grpreg","mlbench","party","haven","factoextra","elasticnet",
+"uplift","grf","glmmLasso","GMMBoost","selectiveInference","devtools","quantregForest","REEMtree",
+"survival","rpart","MASS")
+
+install.packages(pac,dependencies=TRUE)
+
+library(devtools)
+install_github(repo="ryantibs/conformal", subdir="conformalInference")
+
+
+###########################################
+
+# Complexity vs AIC plot
+x=seq(7,30,1)
+plot(x,-log(x)+1*x^(.36),type="l",xlab="Model complexity",ylab="AIC",xaxt='n',yaxt='n')
+
+
+# ridge regression
+
+
+# generate training and test data
+
+set.seed(364575)
+
+# train data
+n=100
+x1=rnorm(n)
+x2=x1+.5*rnorm(n)
+x3=rnorm(n)
+y=x1+x2+x3+3*rnorm(n)
+matx=cbind(x1,x2,x3)
+dat=data.frame(y,x1,x2,x3)
+names(dat)=c("y","x1","x2","x3")
+
+# test data
+ntest=10000
+x1new=rnorm(ntest)
+x2new=x1new+.5*rnorm(ntest)
+x3new=rnorm(ntest)
+ynew=x1new+x2new+x3new+3*rnorm(ntest)
+matxnew=cbind(x1new,x2new,x3new)
+datnew=data.frame(x1new,x2new,x3new)
+names(datnew)=c("x1","x2","x3")
+
+
+# correlation matrix of the train data
+cor(cbind(y,x1,x2,x3))
+
+# ordinary OLS
+lm.fit=lm(y~x1+x2+x3)
+summary(lm.fit)
+
+library(MASS)
+
+# stepwise with AIC as the criterion
+step.AIC=stepAIC(lm.fit,direction="both")
+predaic=predict(lm.fit,newdata=datnew)
+
+# stepwise with BIC as the criterion
+stepAIC(lm.fit,direction="both",k=log(n))
+lm.fitbic=lm(y~x1+x3)
+predbic=predict(lm.fitbic,newdata=datnew)
+
+
+# ridge regression with the glmnet package
+library(glmnet)
+
+# to select the best value of lambda by cross-validation
+# alpha=0 is used to specify ridge regression
+glmnet.cv = cv.glmnet(matx, y, alpha=0)
+plot(glmnet.cv)
+bestlridge=glmnet.cv$lambda.min
+predridge=predict(glmnet.cv,new=matxnew,s=bestlridge)
+predict(glmnet.cv,s=bestlridge,type="coefficients")
+
+plot(glmnet(matx, y, alpha=0,lambda=seq(0,100,.1)),xvar = "lambda", label = TRUE)
+
+# mean squared error for the three models: AIC, BIC, ridge
+c(mean((predaic-ynew)^2),mean((predbic-ynew)^2),mean((predridge-ynew)^2))
+
+
+
+# lasso regression with the glmnet package
+
+plot(glmnet(matx, y, alpha=1,lambda=seq(0,100,.1)),xvar = "lambda", label = TRUE)
+glmnet.cv = cv.glmnet(matx, y, alpha=1)
+plot(glmnet.cv)
+bestllasso=glmnet.cv$lambda.min
+bestllasso
+predlasso=predict(glmnet.cv,new=matxnew,s=bestllasso)
+predict(glmnet.cv,s=bestllasso,type="coefficients")
+
+# mean squared error for: OLS (also stepwise AIC in this example); stepwise BIC; ridge, lasso
+c(mean((predaic-ynew)^2),mean((predbic-ynew)^2),mean((predridge-ynew)^2),mean((predlasso-ynew)^2))
+
+
+# elastic net regression with the glmnet package
+
+plot(glmnet(matx, y, alpha=.5,lambda=seq(0,100,.1)),xvar = "lambda", label = TRUE)
+glmnet.cv = cv.glmnet(matx, y, alpha=.5)
+plot(glmnet.cv)
+bestllel=glmnet.cv$lambda.min
+bestllel
+predelasticnet=predict(glmnet.cv,new=matxnew,s=bestllel)
+predict(glmnet.cv,s=bestllel,type="coefficients")
+
+# mean squared error for: OLS (also stepwise AIC in this example); stepwise BIC; ridge, lasso, elastic net with alpha=1/2
+c(mean((predaic-ynew)^2),mean((predbic-ynew)^2),mean((predridge-ynew)^2),mean((predlasso-ynew)^2),
+mean((predelasticnet-ynew)^2))
+
+
+
+# grouped variables
+
+ranseed(36566)
+x1=runif(200)
+x2=sample(1:4,200,replace=TRUE)
+x21=as.numeric(x2==1)
+x22=as.numeric(x2==2)
+x23=as.numeric(x2==3)
+y=2*x1+x21+rnorm(200)
+matx=cbind(x1,x21,x22,x23)
+summary(lm(y~x1+x21+x22+x23))
+
+library(grpreg)
+group=c(1,2,2,2)
+grlassofit=grpreg(matx, y, group, penalty="grLasso")
+plot(grlassofit)
+
+gelfit=grpreg(matx, y, group, penalty="gel")
+plot(gelfit)
+
+
+
+
+
+###############################################################################
+
+
+
+# rpart and party
+
+library(mlbench)
+data(BreastCancer)
+summary(BreastCancer)
+
+library(rpart)
+library(rpart.plot)
+
+# split data into training (n=349) and test data (n=350)
+set.seed(68576897)
+indtrain=sample(1:NROW(BreastCancer),349,replace=FALSE)
+trainbc=BreastCancer[indtrain,]
+testbc=BreastCancer[-indtrain,]
+
+
+rptree=rpart(Class~Cl.thickness + Cell.size + Cell.shape + Marg.adhesion + Epith.c.size + Bare.nuclei + Bl.cromatin + Normal.nucleoli + Mitoses, 
+data=trainbc,method="class",control = rpart.control(xval = 10, minsplit=10, minbucket = 3, cp = 0))
+rpart.plot(rptree)
+rptree$cp
+rptreepruned=prune(rptree,cp=rptree$cp[which.min(rptree$cp[,"xerror"]),"CP"])
+rpart.plot(rptreepruned)
+predrpart=predict(rptreepruned,newdata=testbc,type="class")
+mean(predrpart==testbc$Class)
+
+library(party)
+cttree=ctree(Class~Cl.thickness + Cell.size + Cell.shape + Marg.adhesion + Epith.c.size + Bare.nuclei + Bl.cromatin + Normal.nucleoli + Mitoses, 
+data=trainbc)
+plot(cttree)
+predct=predict(cttree,newdata=testbc,type="response")
+mean(predct==testbc$Class)
+
+
+
+###############################################################################
+
+# adaboost
+
+library(mlbench)
+data(BreastCancer)
+summary(BreastCancer)
+
+library(adabag)
+
+# split data into training (n=349) and test data (n=350)
+set.seed(68576897)
+indtrain=sample(1:NROW(BreastCancer),349,replace=FALSE)
+trainbc=BreastCancer[indtrain,]
+testbc=BreastCancer[-indtrain,]
+
+ntree=50
+boosting.fit=boosting(Class~Cl.thickness + Cell.size + Cell.shape + Marg.adhesion + Epith.c.size + Bare.nuclei + Bl.cromatin + Normal.nucleoli + Mitoses, 
+data=trainbc, boos = FALSE, mfinal = ntree, coeflearn = 'Freund',
+control=rpart.control(maxdepth=1))
+predboost=predict(boosting.fit, newdata=testbc)
+predboost$class[1:10]
+predboost$error
+predboost$confusion
+
+boosting.evoltrain=errorevol(boosting.fit, newdata=trainbc)
+plot(boosting.evoltrain)
+
+boosting.evoltest=errorevol(boosting.fit, newdata=testbc)
+plot(1:ntree,boosting.evoltest$error)plot(boosting.evoltest)
+
+###############################################################################
+
+# Example of slow learning
+
+set.seed(47576)
+ntrain=100
+ntest=10000-100
+n=ntrain+ntest
+
+sigmae=1
+
+rho=.5
+mu=0
+
+pr=3
+pnr=7
+
+p=pr+pnr
+
+
+library(mvtnorm)
+library(gbm)
+
+x=rmvnorm(n,mean=rep(mu,p),sigma=(diag(rep(1-rho,p))+matrix(rho,p,p)))
+
+e=rnorm(n,0,sigmae)
+
+y=apply(x[,1:pr],1,sum)+e
+
+dat=data.frame(y,x)
+
+ntrees=600
+
+gbm1=gbm(y~.,data=dat,distribution="gaussian", n.trees=ntrees,interaction.depth = 10, train.fraction=0.01,shrinkage =0.01)
+gbm2=gbm(y~.,data=dat,distribution="gaussian", n.trees=ntrees,interaction.depth = 10, train.fraction=0.01,shrinkage =0.1)
+gbm3=gbm(y~.,data=dat,distribution="gaussian", n.trees=ntrees,interaction.depth = 10, train.fraction=0.01,shrinkage =0.4)
+
+xaxis=1:ntrees
+
+# pdf("C:/Users/utilisateur/Desktop/slow_learning.pdf")
+
+matplot(xaxis,cbind(gbm1$train.error,gbm1$valid.error,gbm2$train.error,gbm2$valid.error,gbm3$train.error,gbm3$valid.error),
+type="l",col=1:8,lty=1:2,xlab="Number of trees",ylab="Error",main="Slow learning example (varying the shrinkage parameter e)")
+
+lgtext=c("train error with e=.01", "valid error with e=.01", "train error with e=.1", "valid error with e=.1", "train error with e=.4", "valid error with e=.4")
+legend(ntrees-ntrees/2,7,lgtext,col=1:8,lty=1:2,cex=.8)
+
+abline(h=gbm1$valid.error[which.min(gbm1$valid.error)])
+abline(h=gbm2$valid.error[which.min(gbm2$valid.error)])
+abline(h=gbm3$valid.error[which.min(gbm3$valid.error)])
+
+# dev.off()
+
+
+###############################################################################
+# Sparse PCA
+
+# import the data from SAS
+library(haven)
+datpca=read_sas("C:/Users/utilisateur/Desktop/advanced_data_mining_phd/course_notes_80619_V1/data/factor2.sas7bdat")
+datpca=as.matrix(datpca)
+datpca=apply(datpca,2,scale)
+
+pca=prcomp(datpca)
+
+# visualize the results
+library(factoextra)
+get_eig(pca)
+fviz_eig(pca)
+# getting the coefficient of the first four components
+pca[[2]][,1:4]
+
+
+
+library(elasticnet)
+spcafit=spca(datpca,K=4,sparse="penalty",para=rep(0,4))
+spcafit
+
+
+spcafit=spca(datpca,K=4,sparse="penalty",para=rep(32,4))
+spcafit
+
+###############################################################################
+# Plot ignoring ICC
+
+g=function(m,rho){
+
+2*pnorm(1.96/sqrt(1+(m-1)*rho))-1
+
+}
+
+x=seq(0,1,.01)
+matplot(cbind(x,x,x,x,x,x,x),cbind(g(2,x),g(2,x),g(3,x),g(4,x),g(5,x),g(10,x),g(20,x)),type="l",
+xlab="Intra-cluster correlation" , ylab="True coverage of a CI with target 95% assuming independent data")
+
+abline(h=.95)
+text(.9,.88,"m=2")
+text(.9,.78,"m=3")
+text(.9,.72,"m=4")
+text(.9,.66,"m=5")
+text(.9,.52,"m=10")
+text(.9,.4,"m=20")
+
+###############################################################################
+
+# Simple example with the partial likelihood function
+
+library(survival)
+
+t=c(1,2,3,4,5)
+t1=c(1,10,40,100,300)
+cens=c(1,1,0,1,1)
+x=c(1,0,1,1,0)
+
+dat=data.frame(t,t1,cens,x)
+dat
+
+# Cox models
+summary(coxph(Surv(t,cens)~x))
+summary(coxph(Surv(t1,cens)~x))
+
+# Maximization of the partial likelihood function
+
+f=function(a){
+log(a/(2+3*a))+log(1/(2+2*a))+log(a/(1+a))
+}
+
+
+optimize(f,interval=c(.001,50),maximum=TRUE)
+
+# AFT models
+
+summary(survreg(Surv(t,cens)~x))
+summary(survreg(Surv(t1,cens)~x))
+
+
+
+###############################################################################
+
+#   Prediction intervals
+
+#   Example to check if the coverage is uniform over X
+
+
+set.seed(3656)
+
+ntrain=500
+xtest=data.frame(seq(0,1,.02))
+names(xtest)=c("x")
+ntest=nrow(xtest)
+
+allpred=seq(0,1,.02)
+ally=seq(0,1,.02)
+allcover=seq(0,1,.02)
+alllength=seq(0,1,.02)
+allpred1=seq(0,1,.02)
+ally1=seq(0,1,.02)
+allcover1=seq(0,1,.02)
+alllength1=seq(0,1,.02)
+
+nsim=1000
+
+for(i in 1:nsim)
+{
+x=runif(ntrain)
+y=100+45*x-35*x^2+1*rnorm(ntrain)
+ytest=100+45*xtest$x-35*xtest$x^2+1*rnorm(ntest)
+da=data.frame(y,x)
+names(da)=c("y","x")
+
+
+# right model
+lmfit=lm(y~x+I(x^2))
+
+# wrong model
+lmfit1=lm(y~x)
+
+pred=predict(lmfit,newdata=xtest,interval="prediction")
+allpred=rbind(allpred,pred[,1])
+ally=rbind(ally,ytest)
+allcover=rbind(allcover,as.numeric((ytest>=pred[,2])*(ytest<=pred[,3])))
+alllength=rbind(alllength,pred[,3]-pred[,2])
+
+pred1=predict(lmfit1,newdata=xtest,interval="prediction")
+allpred1=rbind(allpred1,pred1[,1])
+ally1=rbind(ally1,ytest)
+allcover1=rbind(allcover1,as.numeric((ytest>=pred1[,2])*(ytest<=pred1[,3])))
+alllength1=rbind(alllength1,pred1[,3]-pred1[,2])
+
+}
+
+allpred=allpred[-1,]
+ally=ally[-1,]
+allcover=allcover[-1,]
+alllength=alllength[-1,]
+
+allpred1=allpred1[-1,]
+ally1=ally1[-1,]
+allcover1=allcover1[-1,]
+alllength1=alllength1[-1,]
+
+trueg=100+45*xtest$x-35*xtest$x^2
+
+allvar=apply(allpred,2,var)
+allbias2=(apply(allpred,2,mean)-trueg)^2
+allmse=apply((allpred-ally)^2,2,mean)
+cover=apply(allcover,2,mean)
+globalcover=mean(cover)
+globalcover
+globalmeanlength=mean(apply(alllength,2,mean))
+globalmeanlength
+
+allvar1=apply(allpred1,2,var)
+allbias21=(apply(allpred1,2,mean)-trueg)^2
+allmse1=apply((allpred1-ally)^2,2,mean)
+cover1=apply(allcover1,2,mean)
+globalcover1=mean(cover1)
+globalcover1
+globalmeanlength1=mean(apply(alllength1,2,mean))
+globalmeanlength1
+
+# Plot the training data and the fitted models for a typical sample
+plot(x,y)
+points(t(xtest),predict(lmfit,newdata=xtest),type="l")
+points(t(xtest),predict(lmfit1,newdata=xtest),type="l")
+
+# Plot the results for the right model
+par(mfrow=c(2,2))
+plot(xtest$x,cover,xlab="x",ylab="Coverage rate of the PI",main="Right model")
+abline(h=.95)
+plot(xtest$x,allmse,xlab="x",ylab="MSE")
+plot(xtest$x,allvar,xlab="x",ylab="Prediction variance")
+plot(xtest$x,allbias2,xlab="x",ylab="Squared Bias of the prediction")
+sort(cover)
+
+# Plot the results for the wrong model
+par(mfrow=c(2,2))
+plot(xtest$x,cover1,xlab="x",ylab="Coverage rate of the PI",main="Wrong model")
+abline(h=.95)
+plot(xtest$x,allmse1,xlab="x",ylab="MSE")
+plot(xtest$x,allvar1,xlab="x",ylab="Prediction variance")
+plot(xtest$x,allbias21,xlab="x",ylab="Squared Bias of the prediction")
+sort(cover1)
+
+
+# PI after model selection
+
+
+covlen=function(matpi)
+{
+# Function that computes the coverage rate and the mean length
+#	of prediction intervals
+# input: matrix with 3 columns
+# 	col1 = true y
+#	col2 = lower bound of the PI
+#	col3 = upper bound of the PI
+
+# output: List with 2 elements:
+#	1 = coverage rate; 2 = mean length
+
+list(mean(apply(matpi,1,function(a){(a[1]>=a[2])*(a[1]<=a[3])})),
+mean(matpi[,3]-matpi[,2]))
+}
+
+
+set.seed(37658)
+ntrain=120
+ntest=1000
+p=100
+n=ntrain+ntest
+nsim=20
+sigma=1
+library(MASS)
+
+# generate the data
+dat=data.frame(matrix(runif(n*p),ncol=p))
+dat$y=apply(dat[,1:10],1,sum)+sigma*rnorm(n)
+dattrain=dat[1:ntrain,]
+dattest=dat[(ntrain+1):n,]
+
+# AIC model selection
+#lmaic=stepAIC(lm(y~1,data=dattrain),scope=as.formula(paste("y~",paste("X",1:100,sep="",collapse="+"))),direction="both"))
+lmaic=stepAIC(lm(y~.,data=dattrain),trace=0)
+summary(lmaic)
+predaic=predict(lmaic,newdata=dattest,interval="prediction")
+covlenaic=unlist(covlen(cbind(dattest$y,predaic[,2:3])))
+covlenaic
+
+
+# Calibration of a PI
+
+caliblm=function(lmobject,data,y,levels,kfold=10)
+{
+#	fitted lm object
+#	data = data frame
+#	y = response (in data)
+#	levels = vector of levels to assess
+#	kfold = number of folds in CV
+
+#	output = estimated coverage (by CV)  for all values in levels 
+
+library(MASS)
+
+n=NROW(data)
+nf=floor(n/kfold)
+ind=sample(n)
+nlevels=length(levels)
+res=rep(0,nlevels)
+
+t=1
+for(i in 1:kfold)
+{
+indi=seq(t,t+nf-1,1)
+if(i==kfold){indi=seq(t,n,1)}
+dtr=data[-ind[indi],]
+dte=data[ind[indi],]
+#print(dte)
+lmi=update(lmobject,data=dtr)
+lmaici=stepAIC(lmi,trace=0)
+for(j in 1:nlevels)
+{
+predj=predict(lmaici,newdata=dte,interval="prediction",level=levels[j])
+#print(predj)
+predj[,1]=y[ind[indi]]
+res[j]=res[j]+sum(apply(predj,1,function(a){(a[1]>=a[2])*(a[1]<=a[3])}))
+}
+t=t+nf
+}
+rbind(levels,res/n)
+}
+
+caliblm(lmaic,data=dattrain,y=dattrain$y,levels=c(.95,.96,.97,.98,.99,.999,.9999))
+
+lmaic=stepAIC(lm(y~.,data=dattrain),trace=0)
+predaic=predict(lmaic,newdata=dattest,interval="prediction",level=.9999)
+covlenaic=unlist(covlen(cbind(dattest$y,predaic[,2:3])))
+
+
+# Other insights with post selection inference
+
+library(selectiveInference)
+set.seed(37658)
+ntrain=120
+ntest=1000
+nvalid=1000
+p=100
+n=ntrain+ntest+nvalid
+nsim=20
+sigma=1
+
+out=list(matrix(0,nsim,4),matrix(0,nsim,4),matrix(0,nsim,4),matrix(0,nsim,4),matrix(0,nsim,4))
+
+for(i in 1:nsim)
+{
+
+# generate the data
+dat=data.frame(matrix(runif(n*p),ncol=p))
+dat$y=apply(1*dat[,1:10],1,sum)+sigma*rnorm(n)
+dattrain=dat[1:ntrain,]
+dattest=dat[(ntrain+1):(ntrain+ntest),]
+datvalid=dat[(ntrain+ntest+1):n,]
+
+
+# Model with 20 bad variables
+lm1=lm(as.formula(paste("y~",paste("X",11:30,sep="",collapse="+"))),data=dattrain)
+# Model with 5 good and 15 bad variables
+lm2=lm(as.formula(paste("y~",paste("X",c(1:5,11:25),sep="",collapse="+"))),data=dattrain)
+# Model with all 10 good + 10 bad variables
+lm3=lm(as.formula(paste("y~",paste("X",1:20,sep="",collapse="+"))),data=dattrain)
+
+# get the order of entry of the covariates with lars
+fsfit = fs(as.matrix(dattrain[,1:100]),dattrain$y)
+ord=fsfit$action
+# Model with the top 20 variables according to the lasso
+lm4=lm(as.formula(paste("y~",paste("X",ord[1:20],sep="",collapse="+"))),data=dattrain)
+
+# Number of good variables in the top 20 of the lasso order
+ngood=sum(ord[1:20]<=10)
+
+pred1=predict(lm1,newdata=dattest,interval="prediction")
+pred2=predict(lm2,newdata=dattest,interval="prediction")
+pred3=predict(lm3,newdata=dattest,interval="prediction")
+pred4=predict(lm4,newdata=dattest,interval="prediction")
+
+# If we had another sample to estimate the error variance
+# estimate the true error of the model with the top 20 lasso variables
+sigma5=mean((predict(lm4,newdata=datvalid)-datvalid$y)^2)
+
+# We can use this estimated variance in a predict to adjust the PIs
+pred5=predict(lm4,newdata=dattest,interval="prediction",pred.var=sigma5)
+
+
+covlen1=unlist(covlen(cbind(dattest$y,pred1[,2:3])))
+covlen2=unlist(covlen(cbind(dattest$y,pred2[,2:3])))
+covlen3=unlist(covlen(cbind(dattest$y,pred3[,2:3])))
+covlen4=unlist(covlen(cbind(dattest$y,pred4[,2:3])))
+covlen5=unlist(covlen(cbind(dattest$y,pred5[,2:3])))
+
+mse1=mean((dattest$y-pred1[,1])^2)
+mse2=mean((dattest$y-pred2[,1])^2)
+mse3=mean((dattest$y-pred3[,1])^2)
+mse4=mean((dattest$y-pred4[,1])^2)
+mse5=mse4
+
+out[[1]][i,]=c(mse1,covlen1,0)
+out[[2]][i,]=c(mse2,covlen2,5)
+out[[3]][i,]=c(mse3,covlen3,10)
+out[[4]][i,]=c(mse4,covlen4,ngood)
+out[[5]][i,]=c(mse5,covlen5,ngood)
+
+}
+
+par(mfrow=c(2,2))
+
+boxplot(cbind(out[[1]][,1],out[[2]][,1],out[[3]][,1],out[[4]][,1],out[[5]][,1]),main="MSE")
+boxplot(cbind(out[[1]][,2],out[[2]][,2],out[[3]][,2],out[[4]][,2],out[[5]][,2]),main="Coverage rate")
+boxplot(cbind(out[[1]][,3],out[[2]][,3],out[[3]][,3],out[[4]][,3],out[[5]][,3]),main="Mean length")
+boxplot(cbind(out[[1]][,4],out[[2]][,4],out[[3]][,4],out[[4]][,4],out[[5]][,4]),main="Number of good variables")
+
+

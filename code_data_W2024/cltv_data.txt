@@ -1,0 +1,321 @@
+gendgpmixed=function(clustsizetrain,clustersizetest,sigmaa,sigmae){
+
+# function to generate artificial cluster-correlated data
+# clustsizetrain = vector of cluster sizes for training data. The number of cluster is thus the length of this vector.
+# clustsizetest = vector of cluster sizes for test (new) data. The number of cluster is thus the length of this vector.
+#		(both vectors must be of the same length)
+# sigmaa = std of the random intercept
+# sigmae = std of the random error (individual)
+
+# output = list of size 2 with 2 data frame (25 columns each)
+#	1 = training data set; 2 = test data set
+#  col1 - col20 = covariates V1-V20
+#	(x1-x10 are subject level covariates)
+#	(x11-x20 are cluster level covariates)
+#		(only x1,x2,x3,x11,x12,x13 are related to the event time)
+#  col21 = cluster id 
+#  col22 = subject id (within cluster)
+#  col23 = random effect (unknown in a real application)
+#  col24 = cluster size (training data)
+#  col25 = y = response variable
+
+
+library(mvtnorm)
+
+if(length(clustsizetrain) != length(clustsizetest)) 
+{stop("clustsizetrain and clustsizetest must be of same length")}
+clustsize=clustsizetrain+clustsizetest
+
+n=length(clustsize)  # number of clusters
+N=sum(clustsize)   # total sample size
+
+sigma=matrix(.3,10,10)
+sigma=sigma+.7*diag(10)
+
+# subject level covariates
+xs=rmvnorm(N, mean = rep(0, 10), sigma = sigma)
+
+# cluster level covariates
+xc=rmvnorm(n, mean = rep(0, 10), sigma = sigma)
+
+xs[,2]=abs(xs[,2])
+xs[,3]=as.numeric(xs[,3]>.2)
+xs[,4]=abs(xs[,4])
+xs[,5]=as.numeric(xs[,5]>.5)
+xs[,6]=log(xs[,6]+5)
+
+xc[,2]=abs(xc[,2]+.5)
+xc[,3]=as.numeric(xc[,3]>.4)
+xc[,4]=abs(xc[,4])
+xc[,5]=as.numeric(xc[,5]>.5)
+xc[,6]=sqrt(xc[,6]+5)
+
+# subject id
+xs=cbind(xs,unlist(apply(as.matrix(clustsize),1,function(b) seq(1,b,1))))
+
+# cluster id
+xc=cbind(xc,1:n)
+
+# cluster size
+xc=cbind(xc,clustsizetrain)
+
+# random intercept
+xc=cbind(xc,rnorm(n,0,sigmaa))
+
+# repeat the lines for each cluster to get one line per subject
+xc=xc[rep(1:nrow(xc),clustsize), ]
+
+out=data.frame(cbind(xs[,1:10],xc[,1:10],xs[,11],xc[,11],xc[,12],xc[,13]))
+names(out)=c(paste("x",1:20,sep=""),
+"subjectid","clusterid","clustersizetrain","a")
+
+# response
+ out$y=(20+out[,"x1"]+2*out[,"x2"]+3*out[,"x3"]+out[,"x11"]+2*out[,"x12"]+3*out[,"x13"])+out[,"a"]+rnorm(N,0,sigmae)
+
+#out$y=2*(22+2*out[,"x1"]+1*out[,"x2"]+3*out[,"x3"]+out[,"x11"]+2*out[,"x12"]+3*out[,"x13"]-
+#2*out[,"x1"]*out[,"x2"]-2*out[,"x3"]*out[,"x11"]-0.5*out[,"x12"]^2+
+#out[,"a"]+rnorm(N,0,sigmae))
+
+out$y=apply(as.matrix(out$y),1,function(b) max(b,0))
+out$y=apply(as.matrix(out$y),1,function(b) min(b,100))
+
+
+dat=list(NULL,NULL)
+dat[[1]]=out[as.logical(unlist(apply(cbind(clustsizetrain,clustsizetest),1,function(a) c(rep(1,a[1]),rep(0,a[2]))))),]
+dat[[2]]=out[as.logical(unlist(apply(cbind(clustsizetrain,clustsizetest),1,function(a) c(rep(0,a[1]),rep(1,a[2]))))),]
+dat
+
+}
+
+
+# Generate training and test data
+set.seed(4756)
+sigmaa=3
+sigmae=4
+
+clustsizetrain=c(ceiling(8*runif(1000)),rep(0,1000))
+clustsizetest=rep(1,2000)
+datclus=gendgpmixed(clustsizetrain,clustsizetest,sigmaa,sigmae)
+
+datclustrain=datclus[[1]]
+datclustest=datclus[[2]]
+
+# total sample sizes
+nrow(datclustrain)
+nrow(datclustest)
+
+# The test data set contains subjects from
+#  clusters present in the training data set
+#  and subjects from new clusters (not present
+#  in the training data set)
+
+newcluster=setdiff(datclustest[,"clusterid"],datclustrain[,"clusterid"])
+knowncluster=intersect(datclustest[,"clusterid"],datclustrain[,"clusterid"])
+
+summary(knowncluster)
+summary(newcluster)
+
+# Splitting the test data in 2: 1) known clusters and 2) new clusters
+datclustestknown=datclustest[1:1000,]
+datclustestnew=datclustest[1001:2000,]
+
+# Distribution of cluster sizes in training data
+table(datclustrain[,"clustersizetrain"])/as.numeric(names(table(datclustrain[,"clustersizetrain"])))
+
+summary(datclustrain)
+hist(datclustrain[,"y"])
+
+
+# Function to evaluate the MSE for 1) known clusters, 2) new clusters
+# 	3) known and new together
+
+msekn=function(trueyknown,trueynew,predyknown,predynew)
+{
+out=data.frame(mean((trueyknown-predyknown)^2),
+mean((trueynew-predynew)^2),
+mean((c(trueyknown,trueynew)-c(predyknown,predynew))^2))
+names(out) = c("MSE known clusters","MSE new clusters","MSE global")
+out
+}
+
+# Fit ordinary regression neglecting the intra-cluster correlation
+
+lmclus=lm(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20,data=datclustrain)
+summary(lmclus)
+predlmclusk=predict(lmclus,newdata=datclustestknown)
+predlmclusn=predict(lmclus,newdata=datclustestnew)
+allmse=msekn(datclustestknown$y,datclustestnew$y,
+predlmclusk,predlmclusn)
+row.names(allmse)=c("OLS")
+allmse
+#plot(datclustestknown$y,predlmclusk)
+#plot(datclustestnew$y,predlmclusn)
+
+# Fit ordinary regression with a fixed cluster effect
+
+lmfixedclus=lm(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+factor(clusterid)+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20,data=datclustrain)
+length(coef(lmfixedclus))
+coef(lmfixedclus)[c(1:20,1000:1020)]
+predlmfixedclusk=predict(lmfixedclus,newdata=datclustestknown)
+
+# If we try the code below, we get an error message because 
+#   we cannot predict a new cluster
+# predlmfixedclusn=predict(lmfixedclus,newdata=datclustestnew)
+
+# We put NA's since we can not get the predictions
+predlmfixedclusn=rep(NA,length(datclustestnew$y))
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predlmfixedclusk,predlmfixedclusn)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="OLS fixed cluster effects"
+allmse
+
+
+# linear mixed models
+
+library(nlme)
+
+# Compound symmetry covariance structure (with gls function!)
+lmeclusCS=gls(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20,data=datclustrain,
+cor = corCompSymm(form = ~1|clusterid))
+summary(lmeclusCS)
+predlmeclusCSk=predict(lmeclusCS,newdata=datclustestknown)
+predlmeclusCSn=predict(lmeclusCS,newdata=datclustestnew)
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predlmeclusCSk,predlmeclusCSn)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="GLS compound symmetry"
+allmse
+
+
+# Random intercept model
+lmeclusranint=lme(fixed=y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20,random=~1|clusterid,
+data=datclustrain)
+summary(lmeclusranint)
+
+# Population-level predictions (random effects not used)
+predlmeclusranint0k=predict(lmeclusranint,newdata=datclustestknown,level=0)
+predlmeclusranint0n=predict(lmeclusranint,newdata=datclustestnew,level=0)
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predlmeclusranint0k,predlmeclusranint0n)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="Random intercept (population level predictions)"
+allmse
+
+# Predictions using the random effects
+predlmeclusranint1k=predict(lmeclusranint,newdata=datclustestknown,level=1)
+# Predict produces a NA for a new cluster
+predlmeclusranint1n=predict(lmeclusranint,newdata=datclustestnew,level=1)
+# Use the population level prediction instead
+predlmeclusranint1n=predict(lmeclusranint,newdata=datclustestnew,level=0)
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predlmeclusranint1k,predlmeclusranint1n)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="Random intercept (individual level predictions)"
+allmse
+
+
+# Stepwise variable selection
+
+library(MASS)
+
+set.seed(37568)
+
+# start with no variables
+lmeclusranintml1=lme(fixed=y~1,random=~1|clusterid,
+data=datclustrain,method="ML")
+
+lmeclusranintmlaicf=stepAIC(lmeclusranintml1,scope=list(upper=~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20, lower=~1))
+summary(lmeclusranintmlaicf)
+
+# Predictions using the random effects for the known clusters
+predlmeclusranintmlaicfk=predict(lmeclusranintmlaicf,newdata=datclustestknown,level=1)
+# Use the population level prediction for the new clusters
+predlmeclusranintmlaicfn=predict(lmeclusranintmlaicf,newdata=datclustestnew,level=0)
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predlmeclusranintmlaicfk,predlmeclusranintmlaicfn)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="RI with stepwise AIC (individual level predictions)"
+allmse
+
+# start with all variables
+lmeclusranintml=lme(fixed=y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20,random=~1|clusterid,
+data=datclustrain,method="ML")
+
+lmeclusranintmlaic=stepAIC(lmeclusranintml)
+
+
+# Tree-based methods
+
+library(rpart)
+library(rpart.plot)
+
+set.seed(37569)
+rpclus=rpart(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20, 
+data=datclustrain,method="anova",
+control = rpart.control(xval = 10, minsplit=10, minbucket = 3, cp = 0))
+rpcluspruned=prune(rpclus,cp=rpclus$cp[which.min(rpclus$cp[,"xerror"]),"CP"])
+rpart.plot(rpcluspruned)
+predrpclusk=predict(rpclus,newdata=datclustestknown)
+predrpclusn=predict(rpclus,newdata=datclustestnew)
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predrpclusk,predrpclusn)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="Single tree"
+allmse
+
+
+library(randomForest)
+
+set.seed(48576)
+rfclus=randomForest(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20, 
+data=datclustrain)
+predrfclusk=predict(rfclus,newdata=datclustestknown)
+predrfclusn=predict(rfclus,newdata=datclustestnew)
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predrfclusk,predrfclusn)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="Random forest"
+allmse
+
+
+library(REEMtree)
+# REEMtree prunes the tree with the 1-SE rule by default
+reemtreeranint=REEMtree(y~x1+x2+x3+x4+x5+x6+x7+x8+x9+x10+
+x11+x12+x13+x14+x15+x16+x17+x18+x19+x20, 
+data=datclustrain, random=~1|clusterid,no.SE =0)
+plot(reemtreeranint)
+
+# Must create a version of the test data where Y is missing
+#	otherwise predict.REEMtree will use it to get a
+#	prediction of the random effects
+datclustestknowntemp=datclustestknown
+datclustestknowntemp$y=NA
+predreemtreeranintk=predict(reemtreeranint,
+newdata=datclustestknowntemp,id=datclustestknowntemp$clusterid)
+
+datclustestnewtemp=datclustestnew
+datclustestnewtemp$y=NA
+predreemtreeranintn=predict(reemtreeranint,
+newdata=datclustestnewtemp,id=datclustestnewtemp$clusterid)
+
+tmse=msekn(datclustestknown$y,datclustestnew$y,
+predreemtreeranintk,predreemtreeranintn)
+allmse=rbind(allmse,tmse)
+row.names(allmse)[nrow(allmse)]="Random intercept REEM tree"
+allmse
+
+
+
+
+
+
+
