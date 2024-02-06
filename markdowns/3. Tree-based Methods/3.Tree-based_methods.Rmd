@@ -1,0 +1,205 @@
+---
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{amsthm}
+title: "2. Regularization and Variable Selection"
+author: "Hair Parra"
+date: "`r Sys.Date()`"
+geometry: margin=1.2cm
+output: 
+    pdf_document: 
+      extra_dependencies: ["array", "amsmath","booktabs"]
+---
+
+\newtheorem{assumption}{Assumption}[assumption]
+\newtheorem{theorem}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{example}{Example}
+\newtheorem{remark*}{Remark}
+\newtheorem{exercise*}{Exercise}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=9, fig.height=6) 
+
+# configurations for plot 
+my_plot_hook <- function(x, options)
+  paste("\n", knitr::hook_plot_tex(x, options), "\n")
+knitr::knit_hooks$set(plot = my_plot_hook)
+```
+
+
+# CART Trees 
+
+## On the splitting criterion
+
+**Note:** The splitting criterion at every (binary) split can be written as: 
+
+$$
+SSE = \sum_{i \in T_L} (y_i - \overline{y}_{T_L})^2 + \sum_{i \in T_R} (y_i - \overline{y}_{T_R})^2
+$$
+
+Another Criterion is the **Gini index**. 
+
+$$
+G(t) = \sum_{k=1}^{K} \hat{p}_{tk} (1 - \hat{p}_{tk})
+$$
+
+, where $\hat{p}_{tk}$ is the proportion of training observations in the $t$th region (node) that are from the $k$th class. 
+
+
+# Breast Cancer Data 
+
+```{r}
+# Load necessary libraries
+library(mlbench)
+library(rpart)
+library(rpart.plot)
+
+# Load and inspect the data
+data(BreastCancer)
+summary(BreastCancer)
+```
+
+```{r}
+# Split data into training (n=349) and test data (n=350)
+set.seed(68576897)
+indtrain <- sample(1:NROW(BreastCancer), 349, replace = FALSE) # Randomly select indices for training
+trainbc <- BreastCancer[indtrain,] # Create training dataset
+testbc <- BreastCancer[-indtrain,] # Create test dataset
+
+# display the dimension of the train and test set 
+dim(trainbc)
+dim(testbc)
+```
+
+## CART Tree
+
+### Fittign the full tree
+
+First, we fit and visualize the full tree without any modifications: 
+
+```{r}
+# Define the formula
+formula <- as.formula(Class 
+                      ~ Cl.thickness + Cell.size + Cell.shape + Marg.adhesion + Epith.c.size 
+                      + Bare.nuclei + Bl.cromatin + Normal.nucleoli + Mitoses)
+
+# Define the control object with comments for each argument
+rpart_control <- rpart.control(
+  xval = 10,             # Number of cross-validation folds
+  minsplit = 10,         # Minimum number of observations in a node to split
+  minbucket = 3,         # Minimum number of observations in a terminal node
+  cp = 0                 # Complexity parameter (a value of 0 disables pruning)
+)
+
+# Fit the rpart tree model with comments for each argument
+rptree <- rpart(formula,
+                data = trainbc,
+                method = "class",
+                control = rpart_control)  # Specify the control object
+
+# Plot the rpart tree
+rpart.plot(rptree)
+```
+
+### Prunning the tree 
+
+However, this will definitely be overfitting. We can prune the tree to avoid overfitting. To do this, we start removing a number of internal nodes bottom-up, and we select the tree size that minimizes the cross-validated MSE. 
+
+- As we prune it, we get **more bias** 
+- **The best tree has the minimal MSE** 
+
+How? --> **cost-complexity prunning** criterion: 
+
+$$
+C_{\alpha}(T) = \underset{\text{In-sample sum of squares}}{\underbrace{SSE(T)}} + \alpha \underset{\text{Num. terminal nodes}}{\underbrace{(N_{T})}}
+= \sum_{t=1}^{N_{T}} \sum_{i \in R_{t}} (y_i - \hat{y}_{R_t})^2 + \alpha N_{T}
+$$
+
+Similar to AIC! 
+
+$$
+\begin{cases}
+\alpha = 0 & \implies \text{Full tree} \\
+\alpha = \infty & \implies \text{Root node} \\
+\end{cases}
+$$
+
+**Note:** $\alpha$ is chosen through cross-validation. 
+- For each value of $\alpha$ there are theorems that tell you which tree is the best.
+
+
+
+```{r}
+# Extract the complexity parameter (cp) values
+rptree$cp
+```
+
+```{r}
+# Prune the tree using the selected cp value
+rptreepruned <- prune(rptree, cp = rptree$cp[which.min(rptree$cp[,"xerror"]), "CP"])
+
+# Plot the pruned rpart tree
+rpart.plot(rptreepruned)
+```
+
+### Making predictions
+
+Finally, we make predictions on the test data using the pruned tree and calculate the mean accuracy of the predictions. 
+
+```{r}
+# Make predictions on the test data using the pruned tree
+predrpart <- predict(rptreepruned, newdata = testbc, type = "class")
+
+# Calculate the mean accuracy of predictions  
+mean(predrpart == testbc$Class)
+```
+**Note:** We could try to find a better threshold but since a single tree is rarely used for predictions, we use 0.5 here as a simple illustration.
+
+
+## Conditional Inference Tree 
+
+
+**Conditional Inference Tree Construction Algorithm:**
+
+1. **Initialization:**
+   - Start with the entire dataset, represented as $D$, which forms the root node of the tree.
+   - Define the significance level $\alpha$ (e.g., 0.05) for hypothesis tests.
+
+2. **Node Splitting:**
+   - For each node $N$ in the tree:
+     - Calculate the node's impurity measure or splitting criterion, which depends on the task (classification or regression). Let $I(N)$ represent this impurity measure.
+     - For each predictor variable $X_j$:
+       - Define a null hypothesis $H_0$ and an alternative hypothesis $H_1$ as follows:
+         - Null Hypothesis $H_0$: There is no significant difference in the distribution of the target variable in the child nodes created by splitting on $X_j$ in node $N$.
+         - Alternative Hypothesis $H_1$: There is a significant difference in the distribution of the target variable in the child nodes.
+       - Perform a statistical test (e.g., Chi-squared test, Fisher's exact test for categorical variables, or permutation test for numeric variables) to evaluate $H_0$ for each potential split on $X_j$ within node $N$. The test statistic $T$ is computed, and the p-value $p$ is obtained.
+       - Compare $p$ to the significance level $\alpha$.
+       - If $p \leq \alpha$, reject $H_0$ in favor of $H_1$, indicating that the split on $X_j$ in node $N$ is statistically significant.
+       - Choose the split with the lowest p-value ($p_{\text{min}}$) among all predictors.
+     - If $p_{\text{min}} \leq \alpha$ or if a stopping criterion is met (e.g., maximum depth, minimum samples per leaf), proceed to the next step. Otherwise, declare node $N$ as a leaf node and assign it the majority class (for classification) or the mean value (for regression) of the target variable.
+
+3. **Child Node Creation:**
+   - For each significant split found in step 2:
+     - Create two child nodes (left and right) based on the selected split.
+     - Recursively apply the splitting process to each child node.
+
+4. **Stopping Criteria:**
+   - The algorithm stops when one of the following conditions is met:
+     - The maximum depth of the tree is reached.
+     - The minimum number of samples per leaf node is reached.
+     - None of the potential splits at a node are statistically significant ($p > \alpha$).
+
+5. **Pruning (Optional):**
+   - After tree construction, pruning can be performed to reduce overfitting. Pruning involves removing branches from the tree that do not significantly improve predictive performance on a separate validation dataset or using cross-validation.
+
+6. **Tree Output:**
+   - The resulting conditional inference tree consists of nodes, each representing a condition based on one of the predictor variables, and leaf nodes that provide the final prediction (class label or regression value). Each node is associated with a statistical test result, including the test statistic $T$ and p-value $p$ indicating the significance of the split.
+
+
+
+
