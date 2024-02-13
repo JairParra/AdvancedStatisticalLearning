@@ -468,11 +468,210 @@ cc/npair
 # We get the same value as the AUC 
 cindexbasic(predlassoger,gercredtest$V21)
 ```
+
 And we see that it ise indeed the same as the AUC. 
 
 
 
 
+
+# Tree-based Methods 
+
+## Simple CART-based Classification Tree
+
+```{r}
+# Load the 'rpart' and 'rpart.plot' libraries for recursive partitioning and tree visualization
+library(rpart)
+library(rpart.plot)
+
+# Set the random seed for reproducibility
+set.seed(46576)
+
+# Fit a classification tree model to predict 'V21' using all predictors
+# Control parameters are set to customize the tree building process
+rptreegc <- rpart(V21 ~ ., 
+                  data = gercredtrain, 
+                  method = "class",
+                  control = rpart.control(xval = 10,  # Number of cross-validation folds
+                                          minsplit = 10,  # Minimum number of observations in a node to split
+                                          minbucket = 3,  # Minimum number of observations in a terminal node
+                                          cp = 0))        # Complexity parameter (a value of 0 disables pruning)
+
+# Plot the classification tree using rpart.plot
+rpart.plot(rptreegc)
+```
+
+- We see that the tree is fairly large with many terminal nodes and is not easy to interpret.
+- We need to **prune** the tree to avoid overfitting. 
+
+
+```{r}
+# Display the complexity parameter table
+rptreegc$cp
+# CP: Complexity parameter
+# nsplit: Number of splits
+# rel error: Relative error
+# xerror: Cross-validation error
+# xstd: Standard error
+```
+
+```{r}
+# Prune the tree using the complexity parameter that minimizes cross-validation error
+rptreegcpruned <- prune(rptreegc, cp = rptreegc$cp[which.min(rptreegc$cp[,"xerror"]), "CP"])
+
+# Plot the pruned classification tree
+rpart.plot(rptreegcpruned)
+```
+
+
+
+```{r}
+# Get the predictions using a threshold of 0.5
+predrpartgc <- predict(rptreegcpruned, newdata = gercredtest, type = "class")
+
+# Calculate the accuracy of the predictions
+mean(as.factor(gercredtest$V21) == predrpartgc)
+```
+
+- the pruned tree is simpler with 12 terminal nodes.
+
+
+### 1-SE Rule 
+
+```{r}
+# Display the complexity parameter table
+rptreegc$cp
+# CP: Complexity parameter
+# nsplit: Number of splits
+# rel error: Relative error
+# xerror: Cross-validation error
+# xstd: Standard error
+```
+
+```{r}
+# Extract the standard error and error at the minimum cross-validation error
+bstd <- rptreegc$cp[which.min(rptreegc$cp[,"xerror"]), "xstd"]
+berr <- rptreegc$cp[which.min(rptreegc$cp[,"xerror"]), "xerror"]
+
+# Apply the 1SE rule for pruning the tree
+rptreegc$cp <- cbind(rptreegc$cp, rptreegc$cp[,"xerror"] <= (berr + bstd))
+
+# Get the complexity parameter value for pruning using the 1SE rule
+cp1se <- rptreegc$cp[rptreegc$cp[,6] == 1, ][which.min(rptreegc$cp[rptreegc$cp[,6] == 1, "nsplit"]), "CP"]
+
+# Prune the tree using the 1SE rule
+rptreegcpruned1se <- prune(rptreegc, cp = cp1se)
+
+# Plot the pruned classification tree
+rpart.plot(rptreegcpruned1se)
+```
+
+```{r}
+# Get the predictions using the pruned tree with the 1SE rule
+predrpartgc1se <- predict(rptreegcpruned1se, newdata = gercredtest, type = "class")
+
+# Calculate the accuracy of the predictions
+mean(as.factor(gercredtest$V21) == predrpartgc1se)
+```
+
+- The tree now has 10 terminal nodes.
+
+
+## Random Forest 
+
+We will now build a random forest with 500 trees. 
+
+```{r, message=FALSE}
+# Set the random seed for reproducibility
+set.seed(4856767)
+
+# Load the 'randomForest' library for random forest classification
+library(randomForest)
+
+# Fit a random forest classification model to predict 'V21' using all predictors
+rfgc <- randomForest(as.factor(V21) ~ ., data = gercredtrain, ntree = 500)
+
+# Display the random forest model summary
+rfgc
+```
+
+
+```{r}
+# Get the estimated probabilities for each class on the test set
+predrfgc <- predict(rfgc, newdata = gercredtest, type = "prob")
+
+# Display the estimated probabilities for the first 10 observations
+predrfgc[1:10, ]
+
+# Get the 0-1 predictions using a threshold of 0.5 by default
+predrfgc01 <- predict(rfgc, newdata = gercredtest)
+
+# Display the 0-1 predictions for the first 10 observations
+predrfgc01[1:10]
+
+# Calculate the classification rate
+mean(as.factor(gercredtest$V21) == predrfgc01)
+```
+- The good classification rate on the test set is 0.7325.
+
+
+### Threshold Adjustment 
+
+Although we saw earlier that the best threshold is close to 0.5, just as an example, we can try to find a better threshold with the function `bestcutp` described in the previous chapter.
+
+```{r}
+# Get the out-of-bag (OOB) predictions
+predoob <- predict(rfgc, type = "prob")
+
+# Find the best threshold for classification
+res <- bestcutp(predoob[,2], gercredtrain$V21, gainmat = diag(2),
+                cutp = seq(0, 1, .02), plotit = TRUE)
+```
+
+```{r}
+# Display the threshold and corresponding gain
+res[[2]]
+# cutp: Threshold value
+# gain: Gain value
+```
+- The best threshold is estimated to be 0.56. 
+- Using the best threshold 0.44, the estimated good classification rate is 0.78, obtained by CV.
+
+
+```{r}
+# Get the new predictions using the updated threshold
+predrfgc01v2 <- as.numeric(predrfgc[,2] > res[[2]][1])
+
+# Display the new predictions for the first 10 observations
+predrfgc01v2[1:10]
+
+# Calculate the classification rate
+mean(as.factor(gercredtest$V21) == predrfgc01v2)
+```
+
+- Using the best threshold of 0.56 produces a good classification rate of 0.74 on the test set.
+
+The good classification rate we obtained is a little bit better than the rate that we got from the lasso logistic regression in the previous chapter, and the single tree rates that we just saw.
+
+
+
+## Remarks! 
+
+- We must be careful with the predict function if we use it to get
+predictions for the training data set.
+- Using predict as above, `predoob=predict(rfgc,type="prob")`, produces the OOB predictions. 
+These are the right ones because we do not want to use the same observations that served to build the tree.
+- If we use predict like below, with `predinbag=predict(rfgc,newdata=gercredtrain)`  , `randomForest` interprets it as if we want to predict new data and it uses the basic predictions, that use all the training data set. We see here that we get a **good classification rate of 1**, which is overly optimistic.
+
+
+```{r}
+# Be careful not to use the in-bag predictions with the training data
+# as it may result in overly optimistic classification rates
+predinbag <- predict(rfgc, newdata = gercredtrain)
+
+# Calculate the classification rate using the in-bag predictions
+mean(as.factor(gercredtrain$V21) == predinbag)
+```
 
 
 

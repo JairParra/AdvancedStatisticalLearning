@@ -53,6 +53,8 @@ $$
 
 # Breast Cancer Data 
 
+
+
 ```{r}
 # Load necessary libraries
 library(mlbench)
@@ -106,6 +108,25 @@ rptree <- rpart(formula,
 rpart.plot(rptree)
 ```
 
+### Inspecting the objects 
+
+
+```{r}
+# inspect the object methods 
+names(rptree)
+```
+
+```{r}
+# Check the different complexity parameters (cp) values
+rptree$cp
+```
+
+```{r}
+# Find the optimcal cp value to obtain the best tree
+rptreepruned = prune(rptree, cp = rptree$cp[which.min(rptree$cp[,"xerror"]), "CP"])
+```
+
+
 ### Prunning the tree 
 
 However, this will definitely be overfitting. We can prune the tree to avoid overfitting. To do this, we start removing a number of internal nodes bottom-up, and we select the tree size that minimizes the cross-validated MSE. 
@@ -129,7 +150,7 @@ $$
 \end{cases}
 $$
 
-**Note:** $\alpha$ is chosen through cross-validation. 
+**Note:** $\alpha$ is chosen through **cross-validation**. 
 - For each value of $\alpha$ there are theorems that tell you which tree is the best.
 
 
@@ -202,4 +223,44 @@ mean(predrpart == testbc$Class)
 
 
 
+# Breast Cancer Data (Cont'd)
+
+We first build and plot the tree with the default parameters.
+
+```{r, fig.height=6, fig.width=10}
+# Load the 'party' library for conditional inference trees
+library(party)
+
+# Fit a conditional inference tree model to predict 'Class' based on the features provided
+cttree <- ctree(Class ~ Cl.thickness + Cell.size + Cell.shape + Marg.adhesion +
+                Epith.c.size + Bare.nuclei + Bl.cromatin + Normal.nucleoli + Mitoses,
+                data = trainbc)
+
+# Plot the conditional inference tree
+plot(cttree)
+```
+
+
+We then compute the predictions for the new data and compute the good classification rate.
+
+```{r}
+# Predict the class labels for the test data using the fitted tree model
+predct <- predict(cttree, newdata = testbc, type = "response")
+
+# Calculate the mean accuracy by comparing predicted labels with actual test labels
+mean(predct == testbc$Class)
+```
+
+We obtain around $94\%$ good classification rate! 
+
+
+# Ames data 
+
+## Preprocessing 
+
+
+
+```{r}
+
+```
 

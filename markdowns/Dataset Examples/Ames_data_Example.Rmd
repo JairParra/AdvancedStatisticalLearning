@@ -596,7 +596,111 @@ allres <- rbind(allres, errgel)
 allres[order(allres[, 1]), ]
 allres[order(allres[, 2]), ]
 ```
+
 **Note:** For predictive purposes, these methods do not have generally disadvantage over the ones that treat the dummies as individual variables. 
+
+
+
+
+
+# Tree-based Methods
+
+## CART on Ames Data 
+
+```{r}
+# Load the 'rpart' library for recursive partitioning and regression trees
+library(rpart)
+
+# Set the random seed for reproducibility
+set.seed(37569)
+
+# Fit a regression tree model to predict 'Sale_Price' using all predictors
+rptree <- rpart(Sale_Price ~ ., data = amestrain, method = "anova",
+                control = rpart.control(xval = 10, minsplit = 10, minbucket = 3, cp = 0))
+
+# Prune the regression tree to improve its generalization performance
+rptreepruned <- prune(rptree, cp = rptree$cp[which.min(rptree$cp[,"xerror"]),"CP"])
+
+# Predict 'Sale_Price' for the test data using the pruned regression tree
+predrpart <- predict(rptreepruned, newdata = amestest)
+
+# Calculate the mean absolute error (MAE) and mean squared error (MSE) of the predictions
+errrpart <- data.frame(mean(abs(predrpart - amesdumtest$Sale_Price)),
+                       mean((predrpart - amesdumtest$Sale_Price)^2))
+
+# Set column and row names for the error data frame
+names(errrpart) <- c("MAE", "MSE")
+row.names(errrpart) <- c("single tree (rpart)")
+
+# Display the error metrics
+errrpart
+```
+
+
+```{r}
+# Append the error metrics from 'errrpart' to the 'allres' data frame
+allres <- rbind(allres, errrpart)
+
+# Sort the 'allres' data frame by MSE in increasing order
+allres <- allres[order(allres$MSE), ]
+
+# Display the updated 'allres' data frame
+allres
+```
+
+
+```{r, message=FALSE}
+# Set the random seed for reproducibility
+set.seed(33967)
+
+# Load the 'randomForest' library for random forest regression
+library(randomForest)
+
+# Fit a random forest regression model to predict 'Sale_Price' using all predictors
+rf <- randomForest(Sale_Price ~ ., data = amestrain, ntree = 500)
+
+# Predict 'Sale_Price' for the test data using the random forest model
+predrf <- predict(rf, newdata = amestest)
+
+# Calculate the mean absolute error (MAE) and mean squared error (MSE) of the predictions
+errrf <- data.frame(mean(abs(predrf - amesdumtest$Sale_Price)),
+                    mean((predrf - amesdumtest$Sale_Price)^2))
+
+# Set column and row names for the error data frame
+names(errrf) <- c("MAE", "MSE")
+row.names(errrf) <- c("random forest")
+
+# Display the error metrics
+errrf
+```
+```{r}
+# Append the error metrics from 'errrf' to the 'allres' data frame
+allres <- rbind(allres, errrf)
+
+# Sort the 'allres' data frame by MSE in increasing order
+allres <- allres[order(allres$MSE), ]
+
+# Display the updated 'allres' data frame
+allres
+```
+
+
+### VIMP measures 
+
+We continue the Ames data example by computing the VIMP with `randomForest`.
+
+```{r}
+# retrieve variable importance
+virf=importance(rf)
+virf
+```
+
+```{r}
+varImpPlot(rf)
+```
+
+
+
 
 
 
